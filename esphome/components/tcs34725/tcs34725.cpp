@@ -144,8 +144,9 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
     } else {
       ESP_LOGW(
           TAG,
-          "Saturation too high, sample with saturation %.1f and clear %d treat lux/color temperature values carefully or use grey filter",
+          "Saturation too high, sample with saturation %.1f and clear %d lux/color temperature cannot reliably calculated, reduce integration/gain or use a grey filter.",
           sat, c);
+      return;
     }
   }
 
@@ -157,7 +158,7 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
   this->illuminance_ = std::max(g1 / cpl, 0.0f);
 
   if (this->illuminance_ > MAX_ILLUMINANCE) {
-    ESP_LOGW(TAG, "Illuminance value too high (%f), setting to NAN", this->illuminance_);
+    ESP_LOGW(TAG, "Calculated illuminance greater than limit (%f), setting to NAN", this->illuminance_);
     this->illuminance_ = NAN;
     return;
   }
@@ -175,10 +176,10 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
 
   // Ensure the color temperature stays within reasonable bounds
   if (this->color_temperature_ < MIN_COLOR_TEMPERATURE) {
-    ESP_LOGW(TAG, "Color temperature value too low (%f), setting to NAN", this->color_temperature_);
+    ESP_LOGW(TAG, "Calculated color temperature value too low (%f), setting to NAN", this->color_temperature_);
     this->color_temperature_ = NAN;
   } else if (this->color_temperature_ > MAX_COLOR_TEMPERATURE) {
-    ESP_LOGW(TAG, "Color temperature value too high (%f), setting to NAN", this->color_temperature_);
+    ESP_LOGW(TAG, "Calculated color temperature value too high (%f), setting to NAN", this->color_temperature_);
     this->color_temperature_ = NAN;
   }
 
