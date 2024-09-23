@@ -213,12 +213,16 @@ void TCS34725Component::update() {
 
   uint8_t data[8];  // Buffer to hold the 8 bytes (2 bytes for each of the 4 channels)
 
+  uint32_t start = millis();
+
   // Perform the burst read and check the error directly in the if statement
   if (this->read_register(TCS34725_REGISTER_CRGBDATAL, data, 8) != i2c::ERROR_OK) {
     this->status_set_warning();
     ESP_LOGW(TAG, "Error reading TCS34725 sensor data");
     return;
   }
+  uint32_t end = millis();
+  ESP_LOGI(TAG, "I2C read took %d ms", end - start);
 
   // Extract the data
   uint16_t raw_c = data[0] | (data[1] << 8);  // Clear channel
