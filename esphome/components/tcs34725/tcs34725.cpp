@@ -54,12 +54,12 @@ void TCS34725Component::dump_config() {
 
   ESP_LOGI(TAG,
            "RGBC values - Red: %.2f, Green: %.2f, Blue: %.2f, Clear: %.2f | Illuminance: %.2f lx, Color Temp: %.2f K",
-           this->red_sensor_->state,
-           this->green_sensor_->state,
-           this->blue_sensor_->state,
-           this->clear_sensor_->state,
-           this->illuminance_sensor_->state,
-           this->color_temperature_sensor_->state);
+           this->red_sensor_,
+           this->green_sensor_,
+           this->blue_sensor_,
+           this->clear_sensor_,
+           this->illuminance_sensor_,
+           this->color_temperature_sensor_);
 }
 float TCS34725Component::get_setup_priority() const { return setup_priority::DATA; }
 
@@ -234,7 +234,7 @@ void TCS34725Component::update() {
     this->status_set_warning();
     return;
   }
-  ESP_LOGV(TAG, "Raw values clear=%d red=%d green=%d blue=%d", raw_c, raw_r, raw_g, raw_b);
+  ESP_LOGV(TAG, "Raw values - Red: %d, Green: %d, Blue: %d, Clear: %d", raw_r, raw_g, raw_b, raw_c);
 
   float channel_c;
   float channel_r;
@@ -279,9 +279,13 @@ void TCS34725Component::update() {
   }
 
   ESP_LOGD(TAG,
-           "Got Red=%.1f%%,Green=%.1f%%,Blue=%.1f%%,Clear=%.1f%% Illuminance=%.1flx Color "
-           "Temperature=%.1fK",
-           channel_r, channel_g, channel_b, channel_c, this->illuminance_, this->color_temperature_);
+           "RGBC values - Red: %.2f, Green: %.2f, Blue: %.2f, Clear: %.2f | Illuminance: %.2f lx, Color Temp: %.2f K",
+           channel_r,
+           channel_g,
+           channel_b,
+           channel_c,
+           this->illuminance_,
+           this->color_temperature_);
 
   if (this->integration_time_auto_) {
     // change integration time an gain to achieve maximum resolution an dynamic range
@@ -322,7 +326,7 @@ void TCS34725Component::update() {
 
     // calculate register value from timing
     uint8_t regval_atime = (uint8_t) (256.f - integration_time_next / 2.4f);
-    ESP_LOGD(TAG, "Integration time: %.1fms, ideal: %.1fms regval_new %d Gain: %.f Clear channel raw: %d  gain reg: %d",
+    ESP_LOGD(TAG, "Integration time: %.1f ms, ideal: %.1f ms | regval_new %d, Gain: %.fx, Clear channel raw: %d, Gain reg: %d",
              this->integration_time_, integration_time_next, regval_atime, this->gain_, raw_c, this->gain_reg_);
 
     if (this->integration_reg_ != regval_atime || gain_reg_val_new != this->gain_reg_) {
@@ -354,7 +358,7 @@ void TCS34725Component::set_integration_time(TCS34725IntegrationTime integration
     this->integration_time_auto_ = false;
   }
   this->integration_time_ = (256.f - my_integration_time_regval) * 2.4f;
-  ESP_LOGI(TAG, "TCS34725I Integration time set to: %.1fms", this->integration_time_);
+  ESP_LOGI(TAG, "TCS34725I Integration time set to: %.1f ms", this->integration_time_);
 }
 void TCS34725Component::set_gain(TCS34725Gain gain) {
   this->gain_reg_ = gain;
