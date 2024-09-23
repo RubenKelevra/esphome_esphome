@@ -54,12 +54,12 @@ void TCS34725Component::dump_config() {
 
   ESP_LOGI(TAG,
            "RGBC values - Red: %.2f, Green: %.2f, Blue: %.2f, Clear: %.2f | Illuminance: %.2f lx, Color Temp: %.2f K",
-           this->red_sensor_,
-           this->green_sensor_,
-           this->blue_sensor_,
-           this->clear_sensor_,
-           this->illuminance_sensor_,
-           this->color_temperature_sensor_);
+           this->red_sensor_->state,
+           this->green_sensor_->state,
+           this->blue_sensor_->state,
+           this->clear_sensor_->state,
+           this->illuminance_sensor_->state,
+           this->color_temperature_sensor_->state);
 }
 float TCS34725Component::get_setup_priority() const { return setup_priority::DATA; }
 
