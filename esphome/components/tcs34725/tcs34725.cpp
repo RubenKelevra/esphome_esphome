@@ -252,14 +252,14 @@ void TCS34725Component::update() {
     channel_c = raw_c / max_count * 100.0f;
   }
 
-  if (this->clear_sensor_ != nullptr)
-    this->clear_sensor_->publish_state(channel_c);
   if (this->red_sensor_ != nullptr)
     this->red_sensor_->publish_state(channel_r);
   if (this->green_sensor_ != nullptr)
     this->green_sensor_->publish_state(channel_g);
   if (this->blue_sensor_ != nullptr)
     this->blue_sensor_->publish_state(channel_b);
+  if (this->clear_sensor_ != nullptr)
+    this->clear_sensor_->publish_state(channel_c);
 
   if (this->illuminance_sensor_ || this->color_temperature_sensor_) {
     calculate_temperature_and_lux_(raw_r, raw_g, raw_b, raw_c);
@@ -279,7 +279,7 @@ void TCS34725Component::update() {
   }
 
   ESP_LOGD(TAG,
-           "RGBC values - Red: %.2f, Green: %.2f, Blue: %.2f, Clear: %.2f | Illuminance: %.2f lx, Color Temp: %.2f K",
+           "RGBC values - Red: %.2f%%, Green: %.2f%%, Blue: %.2f%%, Clear: %.2f%% | Illuminance: %.2f lx, Color Temp: %.2f K",
            channel_r,
            channel_g,
            channel_b,
