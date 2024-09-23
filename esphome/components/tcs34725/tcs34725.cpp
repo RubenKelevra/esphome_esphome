@@ -174,10 +174,14 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
     return;  // Skip calculations if any channel is saturated
   }
 
+  ESP_LOGI(TAG, "c: %d, r: %d, g: %d, b: %d", c, r, g, b);
+
   // Lux Calculation (DN40 3.2)
 
   float g1 = R_COEF * (float) r + G_COEF * (float) g + B_COEF * (float) b;
   float cpl = (this->integration_time_ * this->gain_) / (ga * DF);
+  ESP_LOGI(TAG, "g1: %f, cpl: %f", g1, cpl);
+
 
   this->illuminance_ = std::max(g1 / cpl, 0.0f);
 
