@@ -111,9 +111,11 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
 
   const float ga = this->glass_attenuation_;            // Glass Attenuation Factor
   static const float DF = 310.f;                        // Device Factor
-  static const float R_COEF = 0.136f;                   //
-  static const float G_COEF = 1.f;                      // used in lux computation
-  static const float B_COEF = -0.444f;                  //
+  static const float R_COEF = 0.58f;                    // Adjusted Red Coefficient (original 0.136 + 0.444)
+  static const float G_COEF = 1.444f;                   // Adjusted Green Coefficient (original 1.0 + 0.444)
+  static const float B_COEF = 0.0f;                     // Adjusted Blue Coefficient (original -0.444 + 0.444)
+  // scaling factor (based on original and adjusted sums)
+  static const float SCALING_FACTOR = 0.342f;  // (original_sum / adjusted_sum)
   static const float CT_COEF = 3810.f;                  // Color Temperature Coefficient
   static const float CT_OFFSET = 1391.f;                // Color Temperatuer Offset
   static const float MAX_ILLUMINANCE = 100000.0f;       // Cap illuminance at 100,000 lux
@@ -176,14 +178,16 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
 
   ESP_LOGI(TAG, "c: %d, r: %d, g: %d, b: %d", c, r, g, b);
 
-  // Lux Calculation (DN40 3.2)
+  // Lux Calculation (DN40 3.2) (modified)
 
-  float g1 = R_COEF * (float) r + G_COEF * (float) g + B_COEF * (float) b;
+  float g1_adjusted = R_COEF * (float)r + G_COEF * (float)g + B_COEF * (float)b;
+  // Apply scaling factor to preserve relative differences
+  float g1_scaled = SCALING_FACTOR * g1_adjusted;
   float cpl = (this->integration_time_ * this->gain_) / (ga * DF);
   ESP_LOGI(TAG, "g1: %f, cpl: %f", g1, cpl);
 
 
-  this->illuminance_ = std::max(g1 / cpl, 0.0f);
+  this->illuminance_ = std::max(g1_scaled / cpl, 0.0f);
 
   if (this->illuminance_ > MAX_ILLUMINANCE) {
     ESP_LOGW(TAG, "Calculated illuminance greater than limit (%f), setting to NAN", this->illuminance_);
