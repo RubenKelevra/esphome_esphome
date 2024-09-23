@@ -232,6 +232,8 @@ void TCS34725Component::update() {
 
   ESP_LOGV(TAG, "Raw values - Red: %d, Green: %d, Blue: %d, Clear: %d", raw_r, raw_g, raw_b, raw_c);
 
+  start = millis();
+
   float channel_c;
   float channel_r;
   float channel_g;
@@ -248,6 +250,11 @@ void TCS34725Component::update() {
     channel_c = raw_c / max_count * 100.0f;
   }
 
+  end = millis();
+  ESP_LOGI(TAG, "first set of calculations took %d ms", end - start);
+
+  start = millis();
+
   if (this->red_sensor_ != nullptr)
     this->red_sensor_->publish_state(channel_r);
   if (this->green_sensor_ != nullptr)
@@ -257,10 +264,17 @@ void TCS34725Component::update() {
   if (this->clear_sensor_ != nullptr)
     this->clear_sensor_->publish_state(channel_c);
 
+  end = millis();
+  ESP_LOGI(TAG, "publishing took %d ms", end - start);
+
+  start = millis();
   if (this->illuminance_sensor_ || this->color_temperature_sensor_) {
     calculate_temperature_and_lux_(raw_r, raw_g, raw_b, raw_c);
   }
+  end = millis();
+  ESP_LOGI(TAG, "color temp/lux calc took %d ms", end - start);
 
+  start = millis();
   // do not publish values if auto gain finding ongoing, and oversaturated
   // so: publish when:
   // - not auto mode
@@ -273,6 +287,8 @@ void TCS34725Component::update() {
     if (this->color_temperature_sensor_ != nullptr)
       this->color_temperature_sensor_->publish_state(this->color_temperature_);
   }
+  end = millis();
+  ESP_LOGI(TAG, "second publish took %d ms", end - start);
 
   ESP_LOGD(TAG,
            "RGBC values - Red: %.2f%%, Green: %.2f%%, Blue: %.2f%%, Clear: %.2f%% | Illuminance: %.2f lx, Color Temp: %.2f K",
