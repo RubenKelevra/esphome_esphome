@@ -14,10 +14,7 @@ static const uint8_t TCS34725_REGISTER_ID = TCS34725_COMMAND_BIT | 0x12;
 static const uint8_t TCS34725_REGISTER_ATIME = TCS34725_COMMAND_BIT | 0x01;
 static const uint8_t TCS34725_REGISTER_CONTROL = TCS34725_COMMAND_BIT | 0x0F;
 static const uint8_t TCS34725_REGISTER_ENABLE = TCS34725_COMMAND_BIT | 0x00;
-static const uint8_t TCS34725_REGISTER_CDATAL = TCS34725_COMMAND_BIT | 0x14;
-static const uint8_t TCS34725_REGISTER_RDATAL = TCS34725_COMMAND_BIT | 0x16;
-static const uint8_t TCS34725_REGISTER_GDATAL = TCS34725_COMMAND_BIT | 0x18;
-static const uint8_t TCS34725_REGISTER_BDATAL = TCS34725_COMMAND_BIT | 0x1A;
+static const uint8_t TCS34725_REGISTER_CRGBDATAL = TCS34725_COMMAND_BIT | 0x14;
 
 void TCS34725Component::setup() {
   ESP_LOGCONFIG(TAG, "Setting up TCS34725...");
@@ -213,27 +210,16 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
 }
 
 void TCS34725Component::update() {
-  uint16_t raw_c;
-  uint16_t raw_r;
-  uint16_t raw_g;
-  uint16_t raw_b;
 
-  if (this->read_data_register_(TCS34725_REGISTER_CDATAL, raw_c) != i2c::ERROR_OK) {
+  uint8_t data[8];  // Buffer to hold the 8 bytes (2 bytes for each of the 4 channels)
+
+  // Perform the burst read and check the error directly in the if statement
+  if (this->read_register(TCS34725_REGISTER_CRGBDATAL, data, 8) != i2c::ERROR_OK) {
     this->status_set_warning();
+    ESP_LOGW(TAG, "Error reading TCS34725 sensor data");
     return;
   }
-  if (this->read_data_register_(TCS34725_REGISTER_RDATAL, raw_r) != i2c::ERROR_OK) {
-    this->status_set_warning();
-    return;
-  }
-  if (this->read_data_register_(TCS34725_REGISTER_GDATAL, raw_g) != i2c::ERROR_OK) {
-    this->status_set_warning();
-    return;
-  }
-  if (this->read_data_register_(TCS34725_REGISTER_BDATAL, raw_b) != i2c::ERROR_OK) {
-    this->status_set_warning();
-    return;
-  }
+
   ESP_LOGV(TAG, "Raw values - Red: %d, Green: %d, Blue: %d, Clear: %d", raw_r, raw_g, raw_b, raw_c);
 
   float channel_c;
