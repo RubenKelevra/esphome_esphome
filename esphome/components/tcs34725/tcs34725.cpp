@@ -184,7 +184,7 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
   // Apply scaling factor to preserve relative differences
   float g1_scaled = SCALING_FACTOR * g1_adjusted;
   float cpl = (this->integration_time_ * this->gain_) / (ga * DF);
-  ESP_LOGI(TAG, "g1: %f, cpl: %f", g1, cpl);
+  ESP_LOGI(TAG, "g1_scaled: %f, cpl: %f", g1_scaled, cpl);
 
 
   this->illuminance_ = std::max(g1_scaled / cpl, 0.0f);
