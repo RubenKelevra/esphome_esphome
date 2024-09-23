@@ -52,14 +52,46 @@ void TCS34725Component::dump_config() {
   }
   LOG_UPDATE_INTERVAL(this);
 
-  LOG_SENSOR("  ", "Clear Channel", this->clear_sensor_);
-  LOG_SENSOR("  ", "Red Channel", this->red_sensor_);
-  LOG_SENSOR("  ", "Green Channel", this->green_sensor_);
-  LOG_SENSOR("  ", "Blue Channel", this->blue_sensor_);
-  LOG_SENSOR("  ", "Illuminance", this->illuminance_sensor_);
-  LOG_SENSOR("  ", "Color Temperature", this->color_temperature_sensor_);
+  ESP_LOGI(TAG,
+           "RGBC values - Red: %.2f, Green: %.2f, Blue: %.2f, Clear: %.2f | Illuminance: %.2f lx, Color Temp: %.2f K",
+           this->red_sensor_->state,
+           this->green_sensor_->state,
+           this->blue_sensor_->state,
+           this->clear_sensor_->state,
+           this->illuminance_sensor_->state,
+           this->color_temperature_sensor_->state);
 }
 float TCS34725Component::get_setup_priority() const { return setup_priority::DATA; }
+
+/*!
+ *  @brief  Checks if a given channel value is saturated beyond the threshold
+ *          and logs appropriate warning messages if true. If the auto-gain
+ *          is enabled, the sample will be discarded without further warning,
+ *          otherwise a detailed warning with suggestions is logged.
+ *
+ *  @param  channel_name
+ *          The name of the channel being checked (e.g., "red", "green", "blue", "clear").
+ *  @param  value
+ *          The current raw value of the channel being checked.
+ *  @param  sat
+ *          The saturation threshold value above which the channel is considered overexposed.
+ *  @param  auto_gain
+ *          A flag indicating whether auto-gain adjustment is active. If true, no warning is issued,
+ *          but the sample is discarded. If false, a detailed warning is logged.
+ *  @return Returns true if the channel value is saturated and further calculations should be skipped,
+ *          otherwise false.
+ */
+bool check_saturation(const char* channel_name, uint16_t value, float sat, bool auto_gain) {
+  if (value >= sat) {
+    if (auto_gain) {
+      ESP_LOGI(TAG, "Saturation too high on %s channel, sample discarded, autogain ongoing", channel_name);
+    } else {
+      ESP_LOGW(TAG, "Saturation too high on %s channel (value: %d, threshold: %.1f). Lux/color temperature cannot reliably be calculated. Reduce integration/gain or use a grey filter.", channel_name, value, sat);
+    }
+    return true;
+  }
+  return false;
+}
 
 /*!
  *  @brief  Converts the raw R/G/B values to color temperature in degrees
@@ -136,18 +168,13 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
     /* Adjust sat to 75% to avoid analog saturation if atime < 153.6ms */
     sat -= sat / 4.f;
   }
-  /* Check for saturation and mark the sample as invalid if true */
-  if (c >= sat) {
-    if (this->integration_time_auto_) {
-      ESP_LOGI(TAG, "Saturation too high, sample discarded, autogain ongoing");
-      return;
-    } else {
-      ESP_LOGW(
-          TAG,
-          "Saturation too high, sample with saturation %.1f and clear %d lux/color temperature cannot reliably calculated, reduce integration/gain or use a grey filter.",
-          sat, c);
-      return;
-    }
+
+  // Perform saturation checks on all channels
+  if (check_saturation("clear", c, sat, this->integration_time_auto_) ||
+      check_saturation("red", r, sat, this->integration_time_auto_) ||
+      check_saturation("green", g, sat, this->integration_time_auto_) ||
+      check_saturation("blue", b, sat, this->integration_time_auto_)) {
+    return;  // Skip calculations if any channel is saturated
   }
 
   // Lux Calculation (DN40 3.2)
