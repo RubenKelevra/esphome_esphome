@@ -220,6 +220,12 @@ void TCS34725Component::update() {
     return;
   }
 
+  // Extract the data
+  uint16_t raw_c = data[0] | (data[1] << 8);  // Clear channel
+  uint16_t raw_r = data[2] | (data[3] << 8);  // Red channel
+  uint16_t raw_g = data[4] | (data[5] << 8);  // Green channel
+  uint16_t raw_b = data[6] | (data[7] << 8);  // Blue channel
+
   ESP_LOGV(TAG, "Raw values - Red: %d, Green: %d, Blue: %d, Clear: %d", raw_r, raw_g, raw_b, raw_c);
 
   float channel_c;
