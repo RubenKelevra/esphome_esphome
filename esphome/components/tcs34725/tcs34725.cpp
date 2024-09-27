@@ -1,8 +1,9 @@
 #include "tcs34725.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
-#include <algorithm>
 #include "esphome/core/helpers.h"
+#include <algorithm>
+#include <cmath>
 
 namespace esphome {
 namespace tcs34725 {
@@ -50,7 +51,7 @@ void TCS34725Component::dump_config() {
   }
   LOG_UPDATE_INTERVAL(this);
 
-  LOG_SENSOR("  ", "Clear Channel", this->clear_sensor_);
+  LOG_SENSOR("  ", "Sensor Saturation", this->sensor_saturation_);
   LOG_SENSOR("  ", "Red Channel", this->red_sensor_);
   LOG_SENSOR("  ", "Green Channel", this->green_sensor_);
   LOG_SENSOR("  ", "Blue Channel", this->blue_sensor_);
@@ -72,8 +73,8 @@ float TCS34725Component::get_setup_priority() const { return setup_priority::DAT
  *          Clear channel value
  *  @return Color temperature in degrees Kelvin
  */
-void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, uint16_t b, uint16_t c) {
-  float sat; /* Digital saturation level */
+void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, uint16_t b, uint16_t c, float current_saturation) {
+  float sat_limit;
 
   this->illuminance_ = NAN;
   this->color_temperature_ = NAN;
@@ -105,12 +106,12 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
    *     occur before analog saturation. Digital saturation occurs when
    *     the count reaches 65535.
    */
-  if ((256 - this->integration_reg_) > 63) {
-    /* Track digital saturation */
-    sat = 65535.f;
+
+  /* Adjust sat limit to 75% to avoid analog saturation if atime < 153.6ms */
+  if ((256 - this->integration_reg_) < 63) {
+    sat_limit = 99.99f;
   } else {
-    /* Track analog saturation */
-    sat = 1024.f * (256.f - this->integration_reg_);
+    sat_limit = 75.0f;
   }
 
   /* Ripple rejection:
@@ -130,20 +131,17 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
    *     ignored, but <= 150ms you should calculate the 75% saturation
    *     level to avoid this problem.
    */
-  if (this->integration_time_ < 150) {
-    /* Adjust sat to 75% to avoid analog saturation if atime < 153.6ms */
-    sat -= sat / 4.f;
-  }
+
   /* Check for saturation and mark the sample as invalid if true */
-  if (c >= sat) {
+  if (current_saturation >= sat_limit) {
     if (this->integration_time_auto_) {
       ESP_LOGI(TAG, "Saturation too high, sample discarded, autogain ongoing");
       return;
     } else {
       ESP_LOGW(TAG,
-               "Saturation too high, sample with saturation %.1f and clear %d lux/color temperature cannot reliably "
-               "calculated, reduce integration/gain or use a grey filter.",
-               sat, c);
+               "Saturation too high, sample with saturation %.1f above limit (%.1f). Lux/color"
+               "temperature cannot reliably calculated, reduce integration/gain or use a grey"
+               "filter.", current_saturation, sat_limit);
       return;
     }
   }
@@ -200,24 +198,26 @@ void TCS34725Component::update() {
 
   ESP_LOGV(TAG, "Raw values clear=%d red=%d green=%d blue=%d", raw_c, raw_r, raw_g, raw_b);
 
-  float channel_c;
+  float current_saturation_;
+  uint16_t max_count_;
   float channel_r;
   float channel_g;
   float channel_b;
-  // avoid division by 0 and return black if clear is 0
-  if (raw_c == 0) {
-    channel_c = channel_r = channel_g = channel_b = 0.0f;
-  } else {
-    float max_count = this->integration_time_ <= 153.6f ? this->integration_time_ * 1024.0f / 2.4f : 65535.0f;
-    float sum = raw_c;
-    channel_r = raw_r / sum * 100.0f;
-    channel_g = raw_g / sum * 100.0f;
-    channel_b = raw_b / sum * 100.0f;
-    channel_c = raw_c / max_count * 100.0f;
-  }
 
-  if (this->clear_sensor_ != nullptr)
-    this->clear_sensor_->publish_state(channel_c);
+  /* sensor counts up to 1024 for each 2.4 ms of integration time, until 65535 is hit, which is the
+   * maximum which can be stored in the counter. This happens at 153.6 ms integration time. */
+  max_count = (this->integration_reg_ > 63) ?
+              65535 : (uint16_t)std::min(std::round(this->integration_time_ * 1024.0f / 2.4f), 65535.0f);
+
+  /* according to the data sheet the red channel can respond in some instances stronger than the clear
+   * channel, leading to possibly higher values in the red channel.  */
+  current_saturation = ((float) std::max(raw_c, raw_r) / (float) max_count) * 100.0f;
+
+  current_saturation = std::clamp(current_saturation, 0.0f, 100.0f);
+
+  // FIXME: sum calculation cannot be done here anymore, so we publish 0 values for now
+  channel_r = channel_g = channel_b = 0.0f;
+
   if (this->red_sensor_ != nullptr)
     this->red_sensor_->publish_state(channel_r);
   if (this->green_sensor_ != nullptr)
@@ -234,18 +234,23 @@ void TCS34725Component::update() {
   // - not auto mode
   // - clear not oversaturated
   // - clear oversaturated but gain and timing cannot go lower
-  if (!this->integration_time_auto_ || raw_c < 65530 || (this->gain_reg_ == 0 && this->integration_time_ < 200)) {
+  if (!this->integration_time_auto_ || current_saturation < 99.99f || (this->gain_reg_ == 0 && this->integration_time_ < 200)) {
     if (this->illuminance_sensor_ != nullptr)
       this->illuminance_sensor_->publish_state(this->illuminance_);
 
     if (this->color_temperature_sensor_ != nullptr)
       this->color_temperature_sensor_->publish_state(this->color_temperature_);
+
+    if (this->sensor_saturation_ != nullptr) {
+      this->sensor_saturation_->publish_state(current_saturation);
+    }
   }
 
   ESP_LOGD(TAG,
-           "Got Red=%.1f%%,Green=%.1f%%,Blue=%.1f%%,Clear=%.1f%% Illuminance=%.1flx Color "
+           "Got Red=%.1f%%,Green=%.1f%%,Blue=%.1f%%,Sensor Saturation=%.1f%% Illuminance=%.1flx Color "
            "Temperature=%.1fK",
-           channel_r, channel_g, channel_b, channel_c, this->illuminance_, this->color_temperature_);
+           channel_r, channel_g, channel_b, current_saturation, this->illuminance_, this->color_temperature_);
+
 
   if (this->integration_time_auto_) {
     // change integration time an gain to achieve maximum resolution an dynamic range
@@ -294,12 +299,12 @@ void TCS34725Component::update() {
       this->gain_reg_ = gain_reg_val_new;
       set_gain((TCS34725Gain) gain_reg_val_new);
       if (this->write_config_register_(TCS34725_REGISTER_ATIME, this->integration_reg_) != i2c::ERROR_OK ||
-          this->write_config_register_(TCS34725_REGISTER_CONTROL, this->gain_reg_) != i2c::ERROR_OK) {
+        this->write_config_register_(TCS34725_REGISTER_CONTROL, this->gain_reg_) != i2c::ERROR_OK) {
         this->mark_failed();
-        ESP_LOGW(TAG, "TCS34725I update timing failed!");
-      } else {
-        this->integration_time_ = integration_time_next;
-      }
+      ESP_LOGW(TAG, "TCS34725I update timing failed!");
+        } else {
+          this->integration_time_ = integration_time_next;
+        }
     }
   }
   this->status_clear_warning();
