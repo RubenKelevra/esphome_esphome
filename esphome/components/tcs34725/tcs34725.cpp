@@ -73,7 +73,7 @@ float TCS34725Component::get_setup_priority() const { return setup_priority::DAT
  *          Clear channel value
  *  @return Color temperature in degrees Kelvin
  */
-void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, uint16_t b, uint16_t c, float current_saturation) {
+void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, uint16_t b, float current_saturation) {
   float sat_limit;
 
   this->illuminance_ = NAN;
@@ -199,6 +199,7 @@ void TCS34725Component::update() {
   ESP_LOGV(TAG, "Raw values clear=%d red=%d green=%d blue=%d", raw_c, raw_r, raw_g, raw_b);
 
   float current_saturation;
+  uint16_t raw_peak_value = std::max(raw_c, raw_r);
   uint16_t max_count;
   float channel_r;
   float channel_g;
@@ -211,7 +212,7 @@ void TCS34725Component::update() {
 
   /* according to the data sheet the red channel can respond in some instances stronger than the clear
    * channel, leading to possibly higher values in the red channel.  */
-  current_saturation = ((float) std::max(raw_c, raw_r) / (float) max_count) * 100.0f;
+  current_saturation = ((float) raw_peak_value / (float) max_count) * 100.0f;
 
   current_saturation = std::clamp(current_saturation, 0.0f, 100.0f);
 
@@ -226,7 +227,7 @@ void TCS34725Component::update() {
     this->blue_sensor_->publish_state(channel_b);
 
   if (this->illuminance_sensor_ || this->color_temperature_sensor_) {
-    calculate_temperature_and_lux_(raw_r, raw_g, raw_b, raw_c, current_saturation);
+    calculate_temperature_and_lux_(raw_r, raw_g, raw_b, current_saturation);
   }
 
   // do not publish values if auto gain finding ongoing, and oversaturated
@@ -257,14 +258,14 @@ void TCS34725Component::update() {
     // calculate optimal integration time to achieve 70% satuaration
     float integration_time_ideal;
 
-    integration_time_ideal = 60 / ((float) std::max((uint16_t) 1, raw_c) / 655.35f) * this->integration_time_;
+    integration_time_ideal = 60 / ((float) std::max((uint16_t) 1, raw_peak_value) / 655.35f) * this->integration_time_;
 
     uint8_t gain_reg_val_new = this->gain_reg_;
     // increase gain if less than 20% of white channel used and high integration time
     // increase only if not already maximum
     // do not use max gain, as ist will not get better
     if (this->gain_reg_ < 3) {
-      if (((float) raw_c / 655.35 < 20.f) && (this->integration_time_ > 600.f)) {
+      if (((float) raw_peak_value / 655.35 < 20.f) && (this->integration_time_ > 600.f)) {
         gain_reg_val_new = this->gain_reg_ + 1;
         // update integration time to new situation
         integration_time_ideal = integration_time_ideal / 4;
@@ -273,7 +274,7 @@ void TCS34725Component::update() {
 
     // decrease gain, if very high clear values and integration times alreadey low
     if (this->gain_reg_ > 0) {
-      if (70 < ((float) raw_c / 655.35) && (this->integration_time_ < 200)) {
+      if (70 < ((float) raw_peak_value / 655.35) && (this->integration_time_ < 200)) {
         gain_reg_val_new = this->gain_reg_ - 1;
         // update integration time to new situation
         integration_time_ideal = integration_time_ideal * 4;
@@ -291,8 +292,8 @@ void TCS34725Component::update() {
 
     // calculate register value from timing
     uint8_t regval_atime = (uint8_t) (256.f - integration_time_next / 2.4f);
-    ESP_LOGD(TAG, "Integration time: %.1fms, ideal: %.1fms regval_new %d Gain: %.f Clear channel raw: %d  gain reg: %d",
-             this->integration_time_, integration_time_next, regval_atime, this->gain_, raw_c, this->gain_reg_);
+    ESP_LOGD(TAG, "Integration time: %.1fms, ideal: %.1fms regval_new %d Gain: %.f Peak raw: %d  gain reg: %d",
+             this->integration_time_, integration_time_next, regval_atime, this->gain_, raw_peak_value, this->gain_reg_);
 
     if (this->integration_reg_ != regval_atime || gain_reg_val_new != this->gain_reg_) {
       this->integration_reg_ = regval_atime;
