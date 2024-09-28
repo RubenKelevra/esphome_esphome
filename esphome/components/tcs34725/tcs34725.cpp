@@ -198,8 +198,8 @@ void TCS34725Component::update() {
 
   ESP_LOGV(TAG, "Raw values clear=%d red=%d green=%d blue=%d", raw_c, raw_r, raw_g, raw_b);
 
-  float current_saturation_;
-  uint16_t max_count_;
+  float current_saturation;
+  uint16_t max_count;
   float channel_r;
   float channel_g;
   float channel_b;
