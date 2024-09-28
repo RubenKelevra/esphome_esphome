@@ -60,6 +60,12 @@ TCS34725_GAINS = {
     "60X": TCS34725Gain.TCS34725_GAIN_60X,
 }
 
+color_channel_schema = sensor.sensor_schema(
+    unit_of_measurement=UNIT_PERCENT,
+    icon=ICON_LIGHTBULB,
+    accuracy_decimals=1,
+    state_class=STATE_CLASS_MEASUREMENT,
+)
 sensor_saturation_schema = sensor.sensor_schema(
     unit_of_measurement=UNIT_PERCENT,
     icon=ICON_GAUGE,
