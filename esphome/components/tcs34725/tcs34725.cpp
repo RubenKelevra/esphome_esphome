@@ -108,7 +108,7 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
    */
 
   /* Adjust sat limit to 75% to avoid analog saturation if atime < 153.6ms */
-  if ((256 - this->integration_reg_) < 63) {
+  if ((256 - this->integration_reg_) < 192) {
     sat_limit = 99.99f;
   } else {
     sat_limit = 75.0f;
@@ -207,7 +207,7 @@ void TCS34725Component::update() {
 
   /* sensor counts up to 1024 for each 2.4 ms of integration time, until 65535 is hit, which is the
    * maximum which can be stored in the counter. This happens at 153.6 ms integration time. */
-  max_count = (this->integration_reg_ > 63) ?
+  max_count = (this->integration_reg_ > 192) ?
               65535 : (uint16_t)std::min(std::round(this->integration_time_ * 1024.0f / 2.4f), 65535.0f);
 
   /* according to the data sheet the red channel can respond in some instances stronger than the clear
