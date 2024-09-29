@@ -20,9 +20,9 @@ from esphome.const import (
 
 DEPENDENCIES = ["i2c"]
 
-CONF_RED_CHANNEL = "red_channel_irradiance"
-CONF_GREEN_CHANNEL = "green_channel_irradiance"
-CONF_BLUE_CHANNEL = "blue_channel_irradiance"
+CONF_RED_CHANNEL_IRRADIANCE = "red_channel_irradiance"
+CONF_GREEN_CHANNEL_IRRADIANCE = "green_channel_irradiance"
+CONF_BLUE_CHANNEL_IRRADIANCE = "blue_channel_irradiance"
 CONF_SENSOR_SATURATION = "sensor_saturation"
 
 tcs34725_ns = cg.esphome_ns.namespace("tcs34725")
