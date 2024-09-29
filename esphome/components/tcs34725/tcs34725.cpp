@@ -210,7 +210,7 @@ void TCS34725Component::update() {
   uint16_t raw_g = encode_uint16(data[5], data[4]);  // Green channel
   uint16_t raw_b = encode_uint16(data[7], data[6]);  // Blue channel
 
-  ESP_LOGV(TAG, "Raw values clear=%d red=%d green=%d blue=%d", raw_c, raw_r, raw_g, raw_b);
+  ESP_LOGD(TAG, "Raw values clear=%d red=%d green=%d blue=%d", raw_c, raw_r, raw_g, raw_b);
 
   float current_saturation;
   uint16_t peak_raw_value = std::max({raw_r, raw_g, raw_b});
