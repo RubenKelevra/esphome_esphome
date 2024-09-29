@@ -241,7 +241,7 @@ void TCS34725Component::update() {
     this->blue_sensor_->publish_state(channel_b);
 
   if (this->illuminance_sensor_ || this->color_temperature_sensor_) {
-    calculate_temperature_and_lux_(raw_r, raw_g, raw_b, current_saturation, uint16_t min_raw_value);
+    calculate_temperature_and_lux_(raw_r, raw_g, raw_b, current_saturation, min_raw_value);
   }
 
   // do not publish values if auto gain finding ongoing, and oversaturated
