@@ -16,6 +16,7 @@ from esphome.const import (
     ICON_THERMOMETER,
     UNIT_KELVIN,
     UNIT_LUX,
+    UNIT_IRRADIANCE,
 )
 
 DEPENDENCIES = ["i2c"]
@@ -61,8 +62,8 @@ TCS34725_GAINS = {
     "60X": TCS34725Gain.TCS34725_GAIN_60X,
 }
 
-color_channel_schema = sensor.sensor_schema(
-    unit_of_measurement=UNIT_PERCENT,
+color_channel_irradiance_schema = sensor.sensor_schema(
+    unit_of_measurement="µW/cm²",  #UNIT_IRRADIANCE,
     icon=ICON_LIGHTBULB,
     accuracy_decimals=1,
     state_class=STATE_CLASS_MEASUREMENT,
@@ -90,9 +91,9 @@ CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(TCS34725Component),
-            cv.Optional(CONF_RED_CHANNEL_IRRADIANCE): color_channel_schema,
-            cv.Optional(CONF_GREEN_CHANNEL_IRRADIANCE): color_channel_schema,
-            cv.Optional(CONF_BLUE_CHANNEL_IRRADIANCE): color_channel_schema,
+            cv.Optional(CONF_RED_CHANNEL_IRRADIANCE): color_channel_irradiance_schema,
+            cv.Optional(CONF_GREEN_CHANNEL_IRRADIANCE): color_channel_irradiance_schema,
+            cv.Optional(CONF_BLUE_CHANNEL_IRRADIANCE): color_channel_irradiance_schema,
             cv.Optional(CONF_SENSOR_SATURATION): sensor_saturation_schema,
             cv.Optional(CONF_ILLUMINANCE): illuminance_schema,
             cv.Optional(CONF_COLOR_TEMPERATURE): color_temperature_schema,
@@ -121,13 +122,13 @@ async def to_code(config):
 
     if CONF_RED_CHANNEL_IRRADIANCE in config:
         sens = await sensor.new_sensor(config[CONF_RED_CHANNEL_IRRADIANCE])
-        cg.add(var.set_red_sensor(sens))
+        cg.add(var.set_red_irradiance_sensor(sens))
     if CONF_GREEN_CHANNEL_IRRADIANCE in config:
         sens = await sensor.new_sensor(config[CONF_GREEN_CHANNEL_IRRADIANCE])
-        cg.add(var.set_green_sensor(sens))
+        cg.add(var.set_green_irradiance_sensor(sens))
     if CONF_BLUE_CHANNEL_IRRADIANCE in config:
         sens = await sensor.new_sensor(config[CONF_BLUE_CHANNEL_IRRADIANCE])
-        cg.add(var.set_blue_sensor(sens))
+        cg.add(var.set_blue_irradiance_sensor(sens))
     if CONF_SENSOR_SATURATION in config:
         sens = await sensor.new_sensor(config[CONF_SENSOR_SATURATION])
         cg.add(var.set_sensor_saturation(sens))
