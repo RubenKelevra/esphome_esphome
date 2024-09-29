@@ -77,6 +77,7 @@ float TCS34725Component::get_setup_priority() const { return setup_priority::DAT
  */
 void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, uint16_t b, float current_saturation, uint16_t min_raw_value) {
   float sat_limit;
+  uint16_t min_raw_limit;
 
   this->illuminance_ = NAN;
   this->color_temperature_ = NAN;
@@ -92,19 +93,19 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
   static const float MAX_COLOR_TEMPERATURE = 15000.0f;  // Maximum expected color temperature in Kelvin
   static const float MIN_COLOR_TEMPERATURE = 1000.0f;   // Maximum reasonable color temperature in Kelvin
 
-
   if (this->integration_reg_ == TCS34725_INTEGRATION_TIME_614MS && this->gain_reg_ == TCS34725_GAIN_60X) {
-    // If we are at the maximum sensitivity setting (614 ms integration time and 60x gain)
-    if (min_raw_value <= 5) {
-      // Minimum raw value is 5 or less, considering the noise this is too low for steady results, return NaN
-      return;
-    }
+    // Minimum raw value is 5 or less, considering the noise this is too low for steady results, return NaN
+    min_raw_limit = 5;
   } else {
-    // We are not at the maximum sensitivity settings
-    if (min_raw_value <= 1) {
-      // Minimum raw value of 1 is considered too low, return NaN
-      return;
-    }
+    // Minimum raw value of 1 is considered too low, return NaN
+    min_raw_value = 1;
+  }
+
+  if (min_raw_value <= min_raw_limit) {
+    ESP_LOGW(TAG,
+               "Saturation too low, sample with saturation %d (raw value) below limit (%d). Lux/color"
+               "temperature cannot reliably calculated.", min_raw_value, min_raw_limit);
+    return;
   }
 
   /* Analog/Digital saturation:
