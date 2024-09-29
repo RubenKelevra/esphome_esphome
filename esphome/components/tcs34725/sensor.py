@@ -20,9 +20,9 @@ from esphome.const import (
 
 DEPENDENCIES = ["i2c"]
 
-CONF_RED_CHANNEL = "red_channel"
-CONF_GREEN_CHANNEL = "green_channel"
-CONF_BLUE_CHANNEL = "blue_channel"
+CONF_RED_CHANNEL = "red_channel_irradiance"
+CONF_GREEN_CHANNEL = "green_channel_irradiance"
+CONF_BLUE_CHANNEL = "blue_channel_irradiance"
 CONF_SENSOR_SATURATION = "sensor_saturation"
 
 tcs34725_ns = cg.esphome_ns.namespace("tcs34725")
@@ -90,9 +90,9 @@ CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(TCS34725Component),
-            cv.Optional(CONF_RED_CHANNEL): color_channel_schema,
-            cv.Optional(CONF_GREEN_CHANNEL): color_channel_schema,
-            cv.Optional(CONF_BLUE_CHANNEL): color_channel_schema,
+            cv.Optional(CONF_RED_CHANNEL_IRRADIANCE): color_channel_schema,
+            cv.Optional(CONF_GREEN_CHANNEL_IRRADIANCE): color_channel_schema,
+            cv.Optional(CONF_BLUE_CHANNEL_IRRADIANCE): color_channel_schema,
             cv.Optional(CONF_SENSOR_SATURATION): sensor_saturation_schema,
             cv.Optional(CONF_ILLUMINANCE): illuminance_schema,
             cv.Optional(CONF_COLOR_TEMPERATURE): color_temperature_schema,
@@ -119,14 +119,14 @@ async def to_code(config):
     cg.add(var.set_gain(config[CONF_GAIN]))
     cg.add(var.set_glass_attenuation_factor(config[CONF_GLASS_ATTENUATION_FACTOR]))
 
-    if CONF_RED_CHANNEL in config:
-        sens = await sensor.new_sensor(config[CONF_RED_CHANNEL])
+    if CONF_RED_CHANNEL_IRRADIANCE in config:
+        sens = await sensor.new_sensor(config[CONF_RED_CHANNEL_IRRADIANCE])
         cg.add(var.set_red_sensor(sens))
-    if CONF_GREEN_CHANNEL in config:
-        sens = await sensor.new_sensor(config[CONF_GREEN_CHANNEL])
+    if CONF_GREEN_CHANNEL_IRRADIANCE in config:
+        sens = await sensor.new_sensor(config[CONF_GREEN_CHANNEL_IRRADIANCE])
         cg.add(var.set_green_sensor(sens))
-    if CONF_BLUE_CHANNEL in config:
-        sens = await sensor.new_sensor(config[CONF_BLUE_CHANNEL])
+    if CONF_BLUE_CHANNEL_IRRADIANCE in config:
+        sens = await sensor.new_sensor(config[CONF_BLUE_CHANNEL_IRRADIANCE])
         cg.add(var.set_blue_sensor(sens))
     if CONF_SENSOR_SATURATION in config:
         sens = await sensor.new_sensor(config[CONF_SENSOR_SATURATION])
