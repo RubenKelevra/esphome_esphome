@@ -233,7 +233,7 @@ void TCS34725Component::update() {
    * channel, leading to possibly higher values in the red channel.  */
   current_saturation = ((float) peak_raw_value / (float) max_count) * 100.0f;
 
-  current_saturation = std::clamp(current_saturation, 0.0f, 100.0f);
+  current_saturation = clamp(current_saturation, 0.0f, 100.0f);
 
   // FIXME: sum calculation cannot be done here anymore, so we publish 0 values for now
   channel_r = channel_g = channel_b = 0.0f;

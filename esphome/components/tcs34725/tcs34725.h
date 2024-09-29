@@ -36,6 +36,11 @@ enum TCS34725Gain {
   TCS34725_GAIN_60X = 0x03,
 };
 
+template <typename T>
+constexpr const T& clamp(const T& value, const T& min, const T& max) {
+  return (value < min) ? min : (value > max ? max : value);
+}
+
 class TCS34725Component : public PollingComponent, public i2c::I2CDevice {
  public:
   void set_integration_time(TCS34725IntegrationTime integration_time);
