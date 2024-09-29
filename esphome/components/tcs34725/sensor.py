@@ -16,7 +16,7 @@ from esphome.const import (
     ICON_THERMOMETER,
     UNIT_KELVIN,
     UNIT_LUX,
-    UNIT_IRRADIANCE,
+    #UNIT_IRRADIANCE,
 )
 
 DEPENDENCIES = ["i2c"]
