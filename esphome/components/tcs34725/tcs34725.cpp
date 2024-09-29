@@ -98,7 +98,7 @@ void TCS34725Component::calculate_temperature_and_lux_(uint16_t r, uint16_t g, u
     min_raw_limit = 5;
   } else {
     // Minimum raw value of 1 is considered too low, return NaN
-    min_raw_value = 1;
+    min_raw_limit = 1;
   }
 
   if (min_raw_value <= min_raw_limit) {
