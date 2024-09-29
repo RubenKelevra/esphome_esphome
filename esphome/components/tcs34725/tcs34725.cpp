@@ -213,7 +213,7 @@ void TCS34725Component::update() {
 
   float current_saturation;
   uint16_t peak_raw_value = std::max({raw_r, raw_g, raw_b});
-  uint16_t min_raw_value = std::min({raw_r, raw_g, raw_b})
+  uint16_t min_raw_value = std::min({raw_r, raw_g, raw_b});
   uint16_t max_count;
   float channel_r;
   float channel_g;
