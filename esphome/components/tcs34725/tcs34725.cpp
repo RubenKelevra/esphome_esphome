@@ -55,9 +55,9 @@ void TCS34725Component::dump_config() {
   LOG_UPDATE_INTERVAL(this);
 
   LOG_SENSOR("  ", "Sensor Saturation", this->sensor_saturation_);
-  LOG_SENSOR("  ", "Red Channel", this->red_sensor_);
-  LOG_SENSOR("  ", "Green Channel", this->green_sensor_);
-  LOG_SENSOR("  ", "Blue Channel", this->blue_sensor_);
+  LOG_SENSOR("  ", "Red Channel Irradiance", this->irradiance_r_);
+  LOG_SENSOR("  ", "Green Channel Irradiance", this->irradiance_g_);
+  LOG_SENSOR("  ", "Blue Channel Irradiance", this->irradiance_b_);
   LOG_SENSOR("  ", "Illuminance", this->illuminance_sensor_);
   LOG_SENSOR("  ", "Color Temperature", this->color_temperature_sensor_);
 }
