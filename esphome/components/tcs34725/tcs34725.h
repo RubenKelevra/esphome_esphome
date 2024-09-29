@@ -68,21 +68,27 @@ class TCS34725Component : public PollingComponent, public i2c::I2CDevice {
     return this->write_register(a_register, &data, 1);
   }
   sensor::Sensor *sensor_saturation_{nullptr};
-  sensor::Sensor *red_sensor_{nullptr};
-  sensor::Sensor *green_sensor_{nullptr};
-  sensor::Sensor *blue_sensor_{nullptr};
+  sensor::Sensor *red_irradiance_sensor_{nullptr};
+  sensor::Sensor *green_irradiance_sensor_{nullptr};
+  sensor::Sensor *blue_irradiance_sensor_{nullptr};
   sensor::Sensor *illuminance_sensor_{nullptr};
   sensor::Sensor *color_temperature_sensor_{nullptr};
   float integration_time_{2.4};
   float gain_{1.0};
   float glass_attenuation_{1.0};
-  float illuminance_;
-  float color_temperature_;
+  float illuminance_{NAN};
+  float color_temperature_{NAN};
+  float irradiance_r_{NAN};
+  float irradiance_g_{NAN};
+  float irradiance_b_{NAN};
   bool integration_time_auto_{true};
 
  private:
   void calculate_temperature_and_lux_(uint16_t r, uint16_t g, uint16_t b, float current_saturation,
                                       uint16_t min_raw_value);
+  void calculate_irradiance_(uint16_t r, uint16_t g, uint16_t b, float current_saturation, uint16_t min_raw_value);
+  float get_saturation_limit_() const;
+  uint16_t get_min_raw_limit_() const;
   uint16_t integration_reg_;
   uint8_t gain_reg_{TCS34725_GAIN_1X};
 };
