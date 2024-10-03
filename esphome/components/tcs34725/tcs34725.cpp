@@ -17,9 +17,9 @@ static const uint8_t TCS34725_REGISTER_ATIME = TCS34725_COMMAND_BIT | 0x01;
 static const uint8_t TCS34725_REGISTER_CONTROL = TCS34725_COMMAND_BIT | 0x0F;
 static const uint8_t TCS34725_REGISTER_ENABLE = TCS34725_COMMAND_BIT | 0x00;
 static const uint8_t TCS34725_REGISTER_CRGBDATAL = TCS34725_COMMAND_BIT | 0x14;
-static const float RED_CHANNEL_COUNTS_TO_IRRADIANCE   = 0.03993133697405683f;  #counts/µW/cm²
-static const float GREEN_CHANNEL_COUNTS_TO_IRRADIANCE = 0.052750222126792465f; #counts/µW/cm²
-static const float BLUE_CHANNEL_COUNTS_TO_IRRADIANCE  = 0.053825145766424116f; #counts/µW/cm²
+static const float RED_CHANNEL_COUNTS_TO_IRRADIANCE   = 0.03993133697405683f;  // counts/µW/cm²
+static const float GREEN_CHANNEL_COUNTS_TO_IRRADIANCE = 0.052750222126792465f; // counts/µW/cm²
+static const float BLUE_CHANNEL_COUNTS_TO_IRRADIANCE  = 0.053825145766424116f; // counts/µW/cm²
 
 void TCS34725Component::setup() {
   ESP_LOGCONFIG(TAG, "Setting up TCS34725...");
@@ -255,7 +255,7 @@ void TCS34725Component::calculate_irradiance_(uint16_t r, uint16_t g, uint16_t b
   }
 
   # Calculate the scaling factor for integration time
-  float integration_time_scaling = this->integration_time_ / 2.4f
+  float integration_time_scaling = this->integration_time_ / 2.4f;
 
   // Calculate irradiance for each channel using predefined conversion factors
   this->irradiance_r_ = std::max(r / (RED_CHANNEL_COUNTS_TO_IRRADIANCE * integration_time_scaling * this->gain_), 0.0f);
