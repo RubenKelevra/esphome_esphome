@@ -254,7 +254,7 @@ void TCS34725Component::calculate_irradiance_(uint16_t r, uint16_t g, uint16_t b
     }
   }
 
-  # Calculate the scaling factor for integration time
+  // Calculate the scaling factor for integration time
   float integration_time_scaling = this->integration_time_ / 2.4f;
 
   // Calculate irradiance for each channel using predefined conversion factors
