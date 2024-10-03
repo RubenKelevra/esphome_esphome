@@ -63,7 +63,7 @@ TCS34725_GAINS = {
 }
 
 color_channel_irradiance_schema = sensor.sensor_schema(
-    unit_of_measurement="µW/cm²"
+    unit_of_measurement="µW/cm²",
     icon=ICON_LIGHTBULB,
     accuracy_decimals=1,
     state_class=STATE_CLASS_MEASUREMENT,
