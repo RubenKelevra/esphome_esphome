@@ -331,7 +331,7 @@ void TCS34725Component::update() {
   }
 
   ESP_LOGD(TAG,
-           "Calculated: Red Irad=%.2f µW/cm²,Green Irad=%.2f µW/cm², Blue Irad=%.2f µW/cm², Sensor Sat=%.2f%%, "
+           "Calculated: Red Irad=%.2f µW/cm², Green Irad=%.2f µW/cm², Blue Irad=%.2f µW/cm², Sensor Sat=%.2f%%, "
            "Illum=%.1f lx, Color Temp=%.1f K",
            this->irradiance_r_, this->irradiance_g_, this->irradiance_b_, current_saturation, this->illuminance_,
            this->color_temperature_);
