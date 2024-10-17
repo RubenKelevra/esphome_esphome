@@ -367,7 +367,7 @@ void TCS34725Component::update() {
     calculate_irradiance_(raw_r, raw_g, raw_b, current_saturation, min_raw_value);
   }
 
-  if (this->cie1931_x_ != nullptr || this->cie1931_y_ != nullptr || this->cie1931_z_ != nullptr) {
+  if (this->cie1931_x_sensor_ != nullptr || this->cie1931_y_sensor_ != nullptr || this->cie1931_z_sensor_ != nullptr) {
     calculate_cie1931_(raw_r, raw_g, raw_b, current_saturation, min_raw_value);
   }
 
