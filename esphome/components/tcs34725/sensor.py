@@ -29,6 +29,9 @@ CONF_RED_CHANNEL_IRRADIANCE = "red_channel_irradiance"
 CONF_GREEN_CHANNEL_IRRADIANCE = "green_channel_irradiance"
 CONF_BLUE_CHANNEL_IRRADIANCE = "blue_channel_irradiance"
 CONF_SENSOR_SATURATION = "sensor_saturation"
+CONF_CIE1931_X = "cie1931_x"
+CONF_CIE1931_Y = "cie1931_y"
+CONF_CIE1931_Z = "cie1931_z"
 
 tcs34725_ns = cg.esphome_ns.namespace("tcs34725")
 TCS34725Component = tcs34725_ns.class_(
@@ -90,6 +93,12 @@ illuminance_schema = sensor.sensor_schema(
     device_class=DEVICE_CLASS_ILLUMINANCE,
     state_class=STATE_CLASS_MEASUREMENT,
 )
+cie1931_schema = sensor.sensor_schema(
+    unit_of_measurement=UNIT_EMPTY,
+    icon="mdi:color",  # icon=ICON_COLOR,
+    accuracy_decimals=2,
+    state_class=STATE_CLASS_MEASUREMENT,
+)
 
 CONFIG_SCHEMA = (
     cv.Schema(
@@ -113,6 +122,9 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_SENSOR_SATURATION): sensor_saturation_schema,
             cv.Optional(CONF_ILLUMINANCE): illuminance_schema,
             cv.Optional(CONF_COLOR_TEMPERATURE): color_temperature_schema,
+            cv.Optional(CONF_CIE1931_X): cie1931_schema,
+            cv.Optional(CONF_CIE1931_Y): cie1931_schema,
+            cv.Optional(CONF_CIE1931_Z): cie1931_schema,
             cv.Optional(CONF_INTEGRATION_TIME, default="auto"): cv.enum(
                 TCS34725_INTEGRATION_TIMES, lower=True
             ),
