@@ -327,7 +327,7 @@ void TCS34725Component::calculate_cie1931_(uint16_t r, uint16_t g, uint16_t b, f
   cie_y = std::max(C21 * scaled_r + C22 * scaled_g + C23 * scaled_b, 0.0f);
   cie_z = std::max(C31 * scaled_r + C32 * scaled_g + C33 * scaled_b, 0.0f);
 
-  ESP_LOGD(TAG, "Calculated CIE1931 - X: %.2f, Y: %.2f, Z: %.2f", this->cie1931_x_, this->cie1931_y_, this->cie1931_z_);
+  ESP_LOGD(TAG, "Calculated CIE1931 - X: %.2f, Y: %.2f, Z: %.2f", cie_x, cie_y, cie_z);
 
   if (this->cie1931_x_ != nullptr)
     this->cie1931_x_->publish_state(cie_x);
