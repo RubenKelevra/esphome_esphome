@@ -369,6 +369,8 @@ void TCS34725Component::update() {
 
   if (this->cie1931_x_sensor_ || this->cie1931_y_sensor_ || this->cie1931_z_sensor_) {
     calculate_cie1931_(raw_r, raw_g, raw_b, current_saturation, min_raw_value);
+  } else {
+    ESP_LOGD(TAG, "not calculating CIE1931 colors, because sensors are 0");  // FIXME debugging
   }
 
   if (this->illuminance_sensor_ || this->color_temperature_sensor_) {
