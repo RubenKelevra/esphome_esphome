@@ -16,7 +16,7 @@ from esphome.const import (
     ICON_THERMOMETER,
     UNIT_KELVIN,
     UNIT_LUX,
-    UNIT_IRRADIANCE,
+   # UNIT_IRRADIANCE,
     UNIT_EMPTY,
 )
 
@@ -71,7 +71,7 @@ TCS34725_GAINS = {
 }
 
 color_channel_irradiance_schema = sensor.sensor_schema(
-    unit_of_measurement=UNIT_IRRADIANCE,
+    unit_of_measurement="µW/cm²", # unit_of_measurement=UNIT_IRRADIANCE, #FIXME: removed for testing
     icon=ICON_LIGHTBULB,
     accuracy_decimals=1,
     state_class=STATE_CLASS_MEASUREMENT,
