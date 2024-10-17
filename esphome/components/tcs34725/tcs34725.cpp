@@ -275,9 +275,9 @@ void TCS34725Component::calculate_irradiance_(uint16_t r, uint16_t g, uint16_t b
 
 void TCS34725Component::calculate_cie1931_(uint16_t r, uint16_t g, uint16_t b, float current_saturation,
                                            uint16_t min_raw_value) {
-  float cie_x = NAN;
-  float cie_y = NAN;
-  float cie_z = NAN;
+  this->cie1931_x_ = NAN;
+  this->cie1931_y_ = NAN;
+  this->cie1931_z_ = NAN;
 
   uint16_t min_raw_limit = get_min_raw_limit_();
   float sat_limit = get_saturation_limit_();
@@ -323,18 +323,11 @@ void TCS34725Component::calculate_cie1931_(uint16_t r, uint16_t g, uint16_t b, f
   float scaled_b = (float) b / (integration_time_scaling * this->gain_);
 
   // Calculate CIE1931 values
-  cie_x = std::max(C11 * scaled_r + C12 * scaled_g + C13 * scaled_b, 0.0f);
-  cie_y = std::max(C21 * scaled_r + C22 * scaled_g + C23 * scaled_b, 0.0f);
-  cie_z = std::max(C31 * scaled_r + C32 * scaled_g + C33 * scaled_b, 0.0f);
+  this->cie1931_x_ = std::max(C11 * scaled_r + C12 * scaled_g + C13 * scaled_b, 0.0f);
+  this->cie1931_y_ = std::max(C21 * scaled_r + C22 * scaled_g + C23 * scaled_b, 0.0f);
+  this->cie1931_z_ = std::max(C31 * scaled_r + C32 * scaled_g + C33 * scaled_b, 0.0f);
 
-  ESP_LOGD(TAG, "Calculated CIE1931 - X: %.2f, Y: %.2f, Z: %.2f", cie_x, cie_y, cie_z);
-
-  if (this->cie1931_x_ != nullptr)
-    this->cie1931_x_->publish_state(cie_x);
-  if (this->cie1931_y_ != nullptr)
-    this->cie1931_y_->publish_state(cie_y);
-  if (this->cie1931_z_ != nullptr)
-    this->cie1931_z_->publish_state(cie_z);
+  ESP_LOGD(TAG, "Calculated CIE1931 - X: %.2f, Y: %.2f, Z: %.2f", this->cie1931_x_, this->cie1931_y_, this->cie1931_z_);
 }
 
 void TCS34725Component::update() {
@@ -389,12 +382,12 @@ void TCS34725Component::update() {
   // - sensor oversaturated but gain and timing cannot go lower
   if (!this->integration_time_auto_ || current_saturation < 99.99f ||
       (this->gain_reg_ == 0 && this->integration_time_ < 200)) {
-    if (this->cie1931_x_ != nullptr)
-      this->cie1931_x_->publish_state(this->cie1931_x_);
-    if (this->cie1931_y_ != nullptr)
-      this->cie1931_y_->publish_state(this->cie1931_y_);
-    if (this->cie1931_z_ != nullptr)
-      this->cie1931_z_->publish_state(this->cie1931_z_);
+    if (this->cie1931_x_sensor_ != nullptr)
+      this->cie1931_x_sensor_->publish_state(this->cie1931_x_);
+    if (this->cie1931_y_sensor_ != nullptr)
+      this->cie1931_y_sensor_->publish_state(this->cie1931_y_);
+    if (this->cie1931_z_sensor_ != nullptr)
+      this->cie1931_z_sensor_->publish_state(this->cie1931_z_);
     if (this->illuminance_sensor_ != nullptr)
       this->illuminance_sensor_->publish_state(this->illuminance_);
     if (this->color_temperature_sensor_ != nullptr)
