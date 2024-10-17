@@ -17,6 +17,7 @@ from esphome.const import (
     UNIT_KELVIN,
     UNIT_LUX,
     UNIT_IRRADIANCE,
+    UNIT_EMPTY,
 )
 
 DEPENDENCIES = ["i2c"]
@@ -95,7 +96,7 @@ illuminance_schema = sensor.sensor_schema(
 )
 cie1931_schema = sensor.sensor_schema(
     unit_of_measurement=UNIT_EMPTY,
-    icon="mdi:color",  # icon=ICON_COLOR,
+    icon="mdi:color",  # icon=ICON_COLOR, #FIXME: removed for testing
     accuracy_decimals=2,
     state_class=STATE_CLASS_MEASUREMENT,
 )
