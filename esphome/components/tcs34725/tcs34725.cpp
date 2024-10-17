@@ -58,9 +58,9 @@ void TCS34725Component::dump_config() {
   LOG_SENSOR("  ", "Red Channel Irradiance", this->red_irradiance_sensor_);
   LOG_SENSOR("  ", "Green Channel Irradiance", this->green_irradiance_sensor_);
   LOG_SENSOR("  ", "Blue Channel Irradiance", this->blue_irradiance_sensor_);
-  LOG_SENSOR("  ", "CIE1931 X", this->cie1931_x_);
-  LOG_SENSOR("  ", "CIE1931 Y", this->cie1931_y_);
-  LOG_SENSOR("  ", "CIE1931 Z", this->cie1931_z_);
+  LOG_SENSOR("  ", "CIE1931 X", this->cie1931_x_sensor_);
+  LOG_SENSOR("  ", "CIE1931 Y", this->cie1931_y_sensor_);
+  LOG_SENSOR("  ", "CIE1931 Z", this->cie1931_z_sensor_);
   LOG_SENSOR("  ", "Illuminance", this->illuminance_sensor_);
   LOG_SENSOR("  ", "Color Temperature", this->color_temperature_sensor_);
 }
@@ -367,7 +367,7 @@ void TCS34725Component::update() {
     calculate_irradiance_(raw_r, raw_g, raw_b, current_saturation, min_raw_value);
   }
 
-  if (this->cie1931_x_sensor_ != nullptr || this->cie1931_y_sensor_ != nullptr || this->cie1931_z_sensor_ != nullptr) {
+  if (this->cie1931_x_sensor_ || this->cie1931_y_sensor_ || this->cie1931_z_sensor_) {
     calculate_cie1931_(raw_r, raw_g, raw_b, current_saturation, min_raw_value);
   }
 
