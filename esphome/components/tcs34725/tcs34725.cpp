@@ -318,9 +318,9 @@ void TCS34725Component::calculate_cie1931_(uint16_t r, uint16_t g, uint16_t b, f
   float integration_time_scaling = this->integration_time_ / 2.4f;
 
   // Adjust the raw RGB values based on the integration time scaling factor and gain
-  float scaled_r = (float) r * (integration_time_scaling * this->gain_);
-  float scaled_g = (float) g * (integration_time_scaling * this->gain_);
-  float scaled_b = (float) b * (integration_time_scaling * this->gain_);
+  float scaled_r = (float) r / (integration_time_scaling * this->gain_);
+  float scaled_g = (float) g / (integration_time_scaling * this->gain_);
+  float scaled_b = (float) b / (integration_time_scaling * this->gain_);
 
   // Calculate CIE1931 values
   this->cie1931_x_ = std::max(C11 * scaled_r + C12 * scaled_g + C13 * scaled_b, 0.0f);
