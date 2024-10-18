@@ -304,23 +304,23 @@ void TCS34725Component::calculate_cie1931_(uint16_t r, uint16_t g, uint16_t b, f
   }
 
   // CIE1931 transformation matrix
-  static const float C11 = 0.0118677f;
-  static const float C12 = -0.00368019f;
-  static const float C13 = 0.0018219f;
-  static const float C21 = -0.00155255f;
-  static const float C22 = 0.00714309f;
-  static const float C23 = 0.00049736f;
-  static const float C31 = -0.00193453f;
-  static const float C32 = 0.00404299f;
-  static const float C33 = 0.00613257f;
+  static const float C11 = 1.89883277f;
+  static const float C12 = -0.58883081f;
+  static const float C13 = 0.29150381f;
+  static const float C21 = -0.24840751f;
+  static const float C22 = 1.14289469f;
+  static const float C23 = 0.07957766f;
+  static const float C31 = -0.3095245f;
+  static const float C32 = 0.64687886f;
+  static const float C33 = 0.98121083f;
 
   // Calc scaling based on integration time
   float integration_time_scaling = this->integration_time_ / 2.4f;
 
   // Adjust the raw RGB values based on the integration time scaling factor and gain
-  float scaled_r = (float) r / (integration_time_scaling * this->gain_);
-  float scaled_g = (float) g / (integration_time_scaling * this->gain_);
-  float scaled_b = (float) b / (integration_time_scaling * this->gain_);
+  float scaled_r = (float) r * (integration_time_scaling * this->gain_);
+  float scaled_g = (float) g * (integration_time_scaling * this->gain_);
+  float scaled_b = (float) b * (integration_time_scaling * this->gain_);
 
   // Calculate CIE1931 values
   this->cie1931_x_ = std::max(C11 * scaled_r + C12 * scaled_g + C13 * scaled_b, 0.0f);
