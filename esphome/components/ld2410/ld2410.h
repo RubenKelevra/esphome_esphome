@@ -26,8 +26,6 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/helpers.h"
 
-#include <map>
-
 namespace esphome {
 namespace ld2410 {
 

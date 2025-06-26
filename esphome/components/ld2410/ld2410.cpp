@@ -21,43 +21,73 @@ static const char *const NO_MAC = "08:05:04:03:02:01";
 static const char *const UNKNOWN_MAC = "unknown";
 static const char *const VERSION_FMT = "%u.%02X.%02X%02X%02X%02X";
 
-static const std::map<std::string, uint8_t> BAUD_RATE_ENUM_TO_INT{
+// Memory-efficient lookup tables
+namespace {
+struct StringToUint8 {
+  const char *str;
+  uint8_t value;
+};
+
+struct Uint8ToString {
+  uint8_t value;
+  const char *str;
+};
+
+constexpr StringToUint8 BAUD_RATES[] = {
     {"9600", BAUD_RATE_9600},     {"19200", BAUD_RATE_19200},   {"38400", BAUD_RATE_38400},
     {"57600", BAUD_RATE_57600},   {"115200", BAUD_RATE_115200}, {"230400", BAUD_RATE_230400},
     {"256000", BAUD_RATE_256000}, {"460800", BAUD_RATE_460800},
 };
 
-static const std::map<std::string, uint8_t> DISTANCE_RESOLUTION_ENUM_TO_INT{
+constexpr StringToUint8 DISTANCE_RESOLUTIONS[] = {
     {"0.2m", DISTANCE_RESOLUTION_0_2},
     {"0.75m", DISTANCE_RESOLUTION_0_75},
 };
 
-static const std::map<uint8_t, std::string> DISTANCE_RESOLUTION_INT_TO_ENUM{
+constexpr Uint8ToString DISTANCE_RESOLUTIONS_REV[] = {
     {DISTANCE_RESOLUTION_0_2, "0.2m"},
     {DISTANCE_RESOLUTION_0_75, "0.75m"},
 };
 
-static const std::map<std::string, uint8_t> LIGHT_FUNCTION_ENUM_TO_INT{
+constexpr StringToUint8 LIGHT_FUNCTIONS[] = {
     {"off", LIGHT_FUNCTION_OFF},
     {"below", LIGHT_FUNCTION_BELOW},
     {"above", LIGHT_FUNCTION_ABOVE},
 };
 
-static const std::map<uint8_t, std::string> LIGHT_FUNCTION_INT_TO_ENUM{
+constexpr Uint8ToString LIGHT_FUNCTIONS_REV[] = {
     {LIGHT_FUNCTION_OFF, "off"},
     {LIGHT_FUNCTION_BELOW, "below"},
     {LIGHT_FUNCTION_ABOVE, "above"},
 };
 
-static const std::map<std::string, uint8_t> OUT_PIN_LEVEL_ENUM_TO_INT{
+constexpr StringToUint8 OUT_PIN_LEVELS[] = {
     {"low", OUT_PIN_LEVEL_LOW},
     {"high", OUT_PIN_LEVEL_HIGH},
 };
 
-static const std::map<uint8_t, std::string> OUT_PIN_LEVEL_INT_TO_ENUM{
+constexpr Uint8ToString OUT_PIN_LEVELS_REV[] = {
     {OUT_PIN_LEVEL_LOW, "low"},
     {OUT_PIN_LEVEL_HIGH, "high"},
 };
+
+// Helper functions for lookups
+template<size_t N> uint8_t find_uint8(const StringToUint8 (&arr)[N], const std::string &str) {
+  for (const auto &entry : arr) {
+    if (str == entry.str)
+      return entry.value;
+  }
+  return 0xFF;  // Not found
+}
+
+template<size_t N> const char *find_str(const Uint8ToString (&arr)[N], uint8_t value) {
+  for (const auto &entry : arr) {
+    if (value == entry.value)
+      return entry.str;
+  }
+  return "";  // Not found
+}
+}  // namespace
 // Commands
 static const uint8_t CMD_ENABLE_CONF = 0xFF;
 static const uint8_t CMD_DISABLE_CONF = 0xFE;
@@ -406,7 +436,7 @@ bool LD2410Component::handle_ack_data_(uint8_t *buffer, int len) {
       break;
     case lowbyte(CMD_QUERY_DISTANCE_RESOLUTION): {
       std::string distance_resolution =
-          DISTANCE_RESOLUTION_INT_TO_ENUM.at(ld2410::two_byte_to_int(buffer[10], buffer[11]));
+          find_str(DISTANCE_RESOLUTIONS_REV, ld2410::two_byte_to_int(buffer[10], buffer[11]));
       ESP_LOGV(TAG, "Distance resolution: %s", distance_resolution.c_str());
 #ifdef USE_SELECT
       if (this->distance_resolution_select_ != nullptr &&
@@ -416,9 +446,9 @@ bool LD2410Component::handle_ack_data_(uint8_t *buffer, int len) {
 #endif
     } break;
     case lowbyte(CMD_QUERY_LIGHT_CONTROL): {
-      this->light_function_ = LIGHT_FUNCTION_INT_TO_ENUM.at(buffer[10]);
+      this->light_function_ = find_str(LIGHT_FUNCTIONS_REV, buffer[10]);
       this->light_threshold_ = buffer[11] * 1.0;
-      this->out_pin_level_ = OUT_PIN_LEVEL_INT_TO_ENUM.at(buffer[12]);
+      this->out_pin_level_ = find_str(OUT_PIN_LEVELS_REV, buffer[12]);
       ESP_LOGV(TAG, "Light function: %s", const_cast<char *>(this->light_function_.c_str()));
       ESP_LOGV(TAG, "Light threshold: %f", this->light_threshold_);
       ESP_LOGV(TAG, "Out pin level: %s", const_cast<char *>(this->out_pin_level_.c_str()));
@@ -554,14 +584,14 @@ void LD2410Component::set_bluetooth(bool enable) {
 
 void LD2410Component::set_distance_resolution(const std::string &state) {
   this->set_config_mode_(true);
-  uint8_t cmd_value[2] = {DISTANCE_RESOLUTION_ENUM_TO_INT.at(state), 0x00};
+  uint8_t cmd_value[2] = {find_uint8(DISTANCE_RESOLUTIONS, state), 0x00};
   this->send_command_(CMD_SET_DISTANCE_RESOLUTION, cmd_value, 2);
   this->set_timeout(200, [this]() { this->restart_and_read_all_info(); });
 }
 
 void LD2410Component::set_baud_rate(const std::string &state) {
   this->set_config_mode_(true);
-  uint8_t cmd_value[2] = {BAUD_RATE_ENUM_TO_INT.at(state), 0x00};
+  uint8_t cmd_value[2] = {find_uint8(BAUD_RATES, state), 0x00};
   this->send_command_(CMD_SET_BAUD_RATE, cmd_value, 2);
   this->set_timeout(200, [this]() { this->restart_(); });
 }
@@ -695,9 +725,9 @@ void LD2410Component::set_light_out_control() {
     return;
   }
   this->set_config_mode_(true);
-  uint8_t light_function = LIGHT_FUNCTION_ENUM_TO_INT.at(this->light_function_);
+  uint8_t light_function = find_uint8(LIGHT_FUNCTIONS, this->light_function_);
   uint8_t light_threshold = static_cast<uint8_t>(this->light_threshold_);
-  uint8_t out_pin_level = OUT_PIN_LEVEL_ENUM_TO_INT.at(this->out_pin_level_);
+  uint8_t out_pin_level = find_uint8(OUT_PIN_LEVELS, this->out_pin_level_);
   uint8_t value[4] = {light_function, light_threshold, out_pin_level, 0x00};
   this->send_command_(CMD_SET_LIGHT_CONTROL, value, 4);
   delay(50);  // NOLINT
