@@ -912,6 +912,8 @@ async def to_code(config):
         if advanced.get(CONF_ENABLE_LWIP_CHECK_THREAD_SAFETY, True):
             add_idf_sdkconfig_option("CONFIG_LWIP_CHECK_THREAD_SAFETY", True)
 
+        add_idf_sdkconfig_option("CONFIG_LWIP_TCP_SACK_OUT", True)
+
         cg.add_platformio_option("board_build.partitions", "partitions.csv")
         if CONF_PARTITIONS in config:
             add_extra_build_file(
