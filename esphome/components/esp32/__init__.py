@@ -972,6 +972,9 @@ async def to_code(config):
         cg.add_build_flag("-DUSE_ESP32_FRAMEWORK_ARDUINO")
         cg.add_platformio_option("platform_packages", [conf[CONF_SOURCE]])
 
+        cg.add_define("CONFIG_LWIP_TCP_SACK_OUT", 1)
+        cg.add_define("CONFIG_LWIP_TCP_QUEUE_OOSEQ", 1)
+
         if CONF_PARTITIONS in config:
             cg.add_platformio_option("board_build.partitions", config[CONF_PARTITIONS])
         else:
