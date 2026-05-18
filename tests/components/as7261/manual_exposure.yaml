@@ -1,0 +1,36 @@
+as7261:
+  id: as7261_manual
+  int_pin:
+    number: GPIO4
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  reset_pin:
+    number: GPIO5
+    inverted: true
+  gain: 16X
+  integration_time: 50
+  update_interval: 30s
+
+sensor:
+  - platform: as7261
+    as7261_id: as7261_manual
+    cct:
+      name: AS7261 Manual CCT
+    calculated_duv:
+      name: AS7261 Manual Duv
+    lux:
+      name: AS7261 Manual Lux
+    oklab_l:
+      name: AS7261 Manual OKLab L
+    oklab_a:
+      name: AS7261 Manual OKLab a
+    oklab_b:
+      name: AS7261 Manual OKLab b
+    oklch_l:
+      name: AS7261 Manual OKLCH L
+    oklch_c:
+      name: AS7261 Manual OKLCH C
+    oklch_h:
+      name: AS7261 Manual OKLCH h

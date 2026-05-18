@@ -1,0 +1,35 @@
+as7261:
+  id: as7261_precision
+  int_pin:
+    number: GPIO4
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  reset_pin:
+    number: GPIO5
+    inverted: true
+  precision_mode: true
+  update_interval: 60s
+
+sensor:
+  - platform: as7261
+    as7261_id: as7261_precision
+    cct:
+      name: AS7261 Precision CCT
+    calculated_duv:
+      name: AS7261 Precision Duv
+    lux:
+      name: AS7261 Precision Lux
+    oklab_l:
+      name: AS7261 Precision OKLab L
+    oklab_a:
+      name: AS7261 Precision OKLab a
+    oklab_b:
+      name: AS7261 Precision OKLab b
+    oklch_l:
+      name: AS7261 Precision OKLCH L
+    oklch_c:
+      name: AS7261 Precision OKLCH C
+    oklch_h:
+      name: AS7261 Precision OKLCH h

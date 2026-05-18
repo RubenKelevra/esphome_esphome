@@ -1,0 +1,61 @@
+as7261:
+  id: as7261_sensor
+  int_pin:
+    number: GPIO4
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  reset_pin:
+    number: GPIO5
+    inverted: true
+  update_interval: 30s
+
+sensor:
+  - platform: as7261
+    as7261_id: as7261_sensor
+    cct:
+      name: AS7261 CCT
+    calculated_duv:
+      name: AS7261 Duv
+    lux:
+      name: AS7261 Lux
+    oklab_l:
+      name: AS7261 OKLab L
+    oklab_a:
+      name: AS7261 OKLab a
+    oklab_b:
+      name: AS7261 OKLab b
+    oklch_l:
+      name: AS7261 OKLCH L
+    oklch_c:
+      name: AS7261 OKLCH C
+    oklch_h:
+      name: AS7261 OKLCH h
+
+  - platform: as7261
+    as7261_id: as7261_sensor
+    device_temperature:
+      name: AS7261 Temperature
+    duv_cie1976:
+      name: AS7261 Vendor DUV CIE1976
+    near_ir_percent:
+      name: AS7261 Near IR Percent
+    raw_clear:
+      name: AS7261 Raw Clear
+    raw_dark:
+      name: AS7261 Raw Dark
+    raw_near_ir:
+      name: AS7261 Raw Near IR
+    x:
+      name: AS7261 X
+    y:
+      name: AS7261 Y
+    z:
+      name: AS7261 Z
+
+text_sensor:
+  - platform: as7261
+    as7261_id: as7261_sensor
+    firmware_version:
+      name: AS7261 Firmware Version

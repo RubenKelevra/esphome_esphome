@@ -1,0 +1,15 @@
+esphome:
+  name: as7261-rp2040-ard
+
+rp2040:
+  board: rpipicow
+  framework:
+    platform_version: https://github.com/maxgerhardt/platform-raspberrypi.git
+
+uart:
+  - id: uart_bus
+    tx_pin: GPIO0
+    rx_pin: GPIO1
+    baud_rate: 115200
+
+<<: !include common.yaml
