@@ -49,6 +49,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
  public:
   void setup() override;
   void dump_config() override;
+  void loop() override;
   void update() override;
 
   void set_int_pin(InternalGPIOPin *int_pin) { this->int_pin_ = int_pin; }
@@ -61,10 +62,53 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   }
 
  protected:
+  enum class TransportState : uint8_t {
+    IDLE,
+    WAITING_RESPONSE,
+    RESET_ASSERTED,
+  };
+
+  enum class TransportResult : uint8_t {
+    NONE,
+    OK,
+    ERROR,
+    TIMEOUT,
+    OVERFLOW,
+  };
+
+  static constexpr size_t COMMAND_BUFFER_LENGTH = 48;
+  static constexpr size_t LINE_BUFFER_LENGTH = 96;
+  static constexpr size_t RESPONSE_BUFFER_LENGTH = 192;
+  static constexpr uint32_t COMMAND_TIMEOUT_MS = 1000;
+  static constexpr uint32_t RESET_PULSE_MS = 2;
+
   const char *gain_to_string_() const;
+  bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
+  bool begin_at_command_(const char *command, uint32_t timeout_ms = COMMAND_TIMEOUT_MS);
+  void poll_transport_();
+  void handle_uart_byte_(uint8_t byte);
+  void finish_response_line_();
+  bool append_response_line_(const char *line);
+  void complete_transport_(TransportResult result);
+  void clear_transport_buffers_();
+  void drain_uart_();
+  void start_reset_pulse_(const char *reason);
+  void release_reset_pulse_();
+  static const char *transport_result_to_string_(TransportResult result);
 
   InternalGPIOPin *int_pin_{nullptr};
   GPIOPin *reset_pin_{nullptr};
+  TransportState transport_state_{TransportState::IDLE};
+  TransportResult last_transport_result_{TransportResult::NONE};
+  uint32_t transport_started_millis_{0};
+  uint32_t transport_timeout_ms_{COMMAND_TIMEOUT_MS};
+  uint32_t reset_started_millis_{0};
+  char command_buffer_[COMMAND_BUFFER_LENGTH]{};
+  char line_buffer_[LINE_BUFFER_LENGTH]{};
+  size_t line_length_{0};
+  char response_buffer_[RESPONSE_BUFFER_LENGTH]{};
+  size_t response_length_{0};
+  uint8_t response_line_count_{0};
   bool precision_mode_{false};
   bool manual_exposure_{false};
   AS7261Gain gain_{AS7261_GAIN_16X};
