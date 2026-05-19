@@ -1,5 +1,6 @@
 #include "as7261.h"
 
+#include <cmath>
 #include <cstring>
 
 #include "esphome/core/helpers.h"
@@ -57,15 +58,18 @@ void AS7261Component::dump_config() {
 #endif
 }
 
-void AS7261Component::loop() { this->poll_transport_(); }
+void AS7261Component::loop() {
+  this->poll_transport_();
+  this->poll_diagnostic_readout_();
+}
 
 void AS7261Component::update() {
-  if (this->transport_busy_()) {
+  if (this->component_busy_()) {
     return;
   }
 
-  if (!this->begin_at_command_("AT")) {
-    ESP_LOGW(TAG, "Unable to start AS7261 transport shell command");
+  if (!this->start_diagnostic_readout_()) {
+    ESP_LOGW(TAG, "Unable to start AS7261 diagnostic readout");
   }
 }
 
@@ -131,6 +135,119 @@ void AS7261Component::poll_transport_() {
   }
 }
 
+void AS7261Component::poll_diagnostic_readout_() {
+  if (!this->diagnostic_active_() || this->transport_busy_()) {
+    return;
+  }
+  this->handle_finished_diagnostic_command_();
+}
+
+bool AS7261Component::start_diagnostic_readout_() {
+#ifdef USE_TEXT_SENSOR
+  if (this->firmware_version_text_sensor_ != nullptr) {
+    return this->start_diagnostic_command_(DiagnosticState::FIRMWARE_VERSION, "ATVERSW");
+  }
+#endif
+  return this->start_device_temperature_readout_();
+}
+
+bool AS7261Component::start_diagnostic_command_(DiagnosticState state, const char *command) {
+  if (this->component_busy_()) {
+    return false;
+  }
+  if (!this->begin_at_command_(command)) {
+    return false;
+  }
+  this->diagnostic_state_ = state;
+  return true;
+}
+
+bool AS7261Component::start_device_temperature_readout_() {
+  return this->start_diagnostic_command_(DiagnosticState::DEVICE_TEMPERATURE, "ATTEMP");
+}
+
+void AS7261Component::handle_finished_diagnostic_command_() {
+  const DiagnosticState finished_state = this->diagnostic_state_;
+  if (this->last_transport_result_ != TransportResult::OK) {
+    ESP_LOGW(TAG, "AS7261 diagnostic command %s failed with %s", this->diagnostic_state_to_string_(finished_state),
+             this->transport_result_to_string_(this->last_transport_result_));
+    this->diagnostic_state_ = DiagnosticState::IDLE;
+    if (finished_state == DiagnosticState::FIRMWARE_VERSION && !this->start_device_temperature_readout_()) {
+      ESP_LOGW(TAG, "Unable to continue AS7261 diagnostic temperature readout after firmware diagnostic failure");
+    }
+    return;
+  }
+
+  if (finished_state == DiagnosticState::FIRMWARE_VERSION) {
+    this->handle_firmware_version_response_();
+    this->diagnostic_state_ = DiagnosticState::IDLE;
+    if (!this->start_device_temperature_readout_()) {
+      ESP_LOGW(TAG, "Unable to continue AS7261 diagnostic temperature readout");
+    }
+    return;
+  }
+
+  if (finished_state == DiagnosticState::DEVICE_TEMPERATURE) {
+    this->handle_device_temperature_response_();
+    this->diagnostic_state_ = DiagnosticState::IDLE;
+  }
+}
+void AS7261Component::handle_firmware_version_response_() {
+#ifdef USE_TEXT_SENSOR
+  if (this->firmware_version_text_sensor_ == nullptr) {
+    return;
+  }
+  const char *const value = this->first_response_value_();
+  if (value == nullptr || value[0] == '\0') {
+    ESP_LOGW(TAG, "AS7261 firmware version response was empty");
+    return;
+  }
+  this->firmware_version_text_sensor_->publish_state(value);
+#endif
+}
+
+void AS7261Component::handle_device_temperature_response_() {
+  const char *const value = this->first_response_value_();
+  int16_t temperature_c = 0;
+  bool invalid = false;
+  if (!this->parse_device_temperature_(value, &temperature_c, &invalid)) {
+    ESP_LOGW(TAG, "Unable to parse AS7261 device temperature response: %s", value == nullptr ? "<empty>" : value);
+    this->device_temperature_valid_ = false;
+    this->device_temperature_invalid_ = false;
+#ifdef USE_SENSOR
+    if (this->device_temperature_sensor_ != nullptr) {
+      this->device_temperature_sensor_->publish_state(NAN);
+    }
+#endif
+    return;
+  }
+
+  if (invalid) {
+    this->device_temperature_valid_ = false;
+    this->device_temperature_invalid_ = true;
+    this->device_temperature_unsafe_ = false;
+#ifdef USE_SENSOR
+    if (this->device_temperature_sensor_ != nullptr) {
+      this->device_temperature_sensor_->publish_state(NAN);
+    }
+#endif
+    return;
+  }
+
+  this->last_device_temperature_c_ = temperature_c;
+  this->device_temperature_valid_ = true;
+  this->device_temperature_invalid_ = false;
+  this->device_temperature_unsafe_ = static_cast<float>(temperature_c) >= DEVICE_TEMPERATURE_UNSAFE_C;
+#ifdef USE_SENSOR
+  if (this->device_temperature_sensor_ != nullptr) {
+    this->device_temperature_sensor_->publish_state(static_cast<float>(temperature_c));
+  }
+#endif
+  if (this->device_temperature_unsafe_) {
+    ESP_LOGW(TAG, "AS7261 reported unsafe device temperature: %d C", static_cast<int>(temperature_c));
+  }
+}
+
 void AS7261Component::handle_uart_byte_(uint8_t byte) {
   if (byte == '\r') {
     return;
@@ -156,20 +273,63 @@ void AS7261Component::finish_response_line_() {
   this->line_buffer_[this->line_length_] = '\0';
   ESP_LOGVV(TAG, "AS7261 RX: %s", this->line_buffer_);
 
-  const bool ok_response = std::strcmp(this->line_buffer_, "OK") == 0;
-  const bool error_response = std::strncmp(this->line_buffer_, "ERROR", 5) == 0;
+  if (this->finish_response_line_with_terminal_("OK", TransportResult::OK)) {
+    return;
+  }
+
+  const char *const line_begin = this->trim_left_(this->line_buffer_);
+  if (std::strncmp(line_begin, "ERROR", 5) == 0) {
+    if (!this->append_response_line_(line_begin)) {
+      this->line_length_ = 0;
+      this->complete_transport_(TransportResult::OVERFLOW);
+      return;
+    }
+    this->line_length_ = 0;
+    this->complete_transport_(TransportResult::ERROR);
+    return;
+  }
+
   if (!this->append_response_line_(this->line_buffer_)) {
     this->line_length_ = 0;
     this->complete_transport_(TransportResult::OVERFLOW);
     return;
   }
   this->line_length_ = 0;
+}
 
-  if (ok_response) {
-    this->complete_transport_(TransportResult::OK);
-  } else if (error_response) {
-    this->complete_transport_(TransportResult::ERROR);
+bool AS7261Component::finish_response_line_with_terminal_(const char *terminal, TransportResult result) {
+  const size_t terminal_length = std::strlen(terminal);
+  const char *const line_begin = this->trim_left_(this->line_buffer_);
+  const char *const line_end = this->trim_right_(line_begin, line_begin + std::strlen(line_begin));
+  if (line_end < line_begin + terminal_length ||
+      std::strncmp(line_end - terminal_length, terminal, terminal_length) != 0) {
+    return false;
   }
+  if (line_end != line_begin + terminal_length && !this->is_space_(*(line_end - terminal_length - 1))) {
+    return false;
+  }
+
+  const char *const value_end = this->trim_right_(line_begin, line_end - terminal_length);
+  if (value_end > line_begin) {
+    char value_line[LINE_BUFFER_LENGTH];
+    const size_t value_length = static_cast<size_t>(value_end - line_begin);
+    if (value_length >= sizeof(value_line)) {
+      this->line_length_ = 0;
+      this->complete_transport_(TransportResult::OVERFLOW);
+      return true;
+    }
+    std::memcpy(value_line, line_begin, value_length);
+    value_line[value_length] = '\0';
+    if (!this->append_response_line_(value_line)) {
+      this->line_length_ = 0;
+      this->complete_transport_(TransportResult::OVERFLOW);
+      return true;
+    }
+  }
+
+  this->line_length_ = 0;
+  this->complete_transport_(result);
+  return true;
 }
 
 bool AS7261Component::append_response_line_(const char *line) {
@@ -239,6 +399,139 @@ void AS7261Component::drain_uart_() {
   }
 }
 
+const char *AS7261Component::first_response_value_() {
+  const char *const begin = this->trim_left_(this->response_buffer_);
+  if (begin == nullptr) {
+    this->line_buffer_[0] = '\0';
+    return this->line_buffer_;
+  }
+
+  const char *line_end = begin;
+  while (*line_end != '\0' && *line_end != '\n') {
+    line_end++;
+  }
+  const char *const end = this->trim_right_(begin, line_end);
+  const size_t length = static_cast<size_t>(end - begin);
+  if (length == 0 || length >= LINE_BUFFER_LENGTH) {
+    this->line_buffer_[0] = '\0';
+    return this->line_buffer_;
+  }
+
+  std::memcpy(this->line_buffer_, begin, length);
+  this->line_buffer_[length] = '\0';
+  return this->line_buffer_;
+}
+
+bool AS7261Component::parse_device_temperature_(const char *text, int16_t *temperature_c, bool *invalid) {
+  if (text == nullptr || temperature_c == nullptr || invalid == nullptr) {
+    return false;
+  }
+
+  *temperature_c = 0;
+  *invalid = false;
+  uint8_t value = 0;
+  if (!parse_unsigned_byte_(text, &value)) {
+    return false;
+  }
+  if (value == 0xFF) {
+    *invalid = true;
+    return true;
+  }
+  *temperature_c = static_cast<int16_t>(value);
+  return true;
+}
+
+bool AS7261Component::parse_unsigned_byte_(const char *text, uint8_t *value) {
+  if (text == nullptr || value == nullptr) {
+    return false;
+  }
+
+  const char *begin = trim_left_(text);
+  const char *end = begin;
+  while (*end != '\0' && *end != '\n') {
+    end++;
+  }
+  end = trim_right_(begin, end);
+  if (begin >= end) {
+    return false;
+  }
+
+  uint8_t base = 10;
+  if (end - begin >= 2 && begin[0] == '0' && (begin[1] == 'x' || begin[1] == 'X')) {
+    begin += 2;
+    base = 16;
+  } else if (end - begin >= 1 && (begin[0] == 'b' || begin[0] == 'B')) {
+    begin += 1;
+    base = 2;
+  }
+  if (begin >= end) {
+    return false;
+  }
+
+  uint16_t parsed = 0;
+  if (!parse_unsigned_digits_(begin, end, base, &parsed) || parsed > 0xFF) {
+    return false;
+  }
+  *value = static_cast<uint8_t>(parsed);
+  return true;
+}
+
+bool AS7261Component::parse_unsigned_digits_(const char *begin, const char *end, uint8_t base, uint16_t *value) {
+  if (begin == nullptr || end == nullptr || value == nullptr || begin >= end) {
+    return false;
+  }
+
+  uint16_t parsed = 0;
+  for (const char *cursor = begin; cursor < end; cursor++) {
+    const int8_t digit = digit_value_(*cursor, base);
+    if (digit < 0) {
+      return false;
+    }
+    parsed = static_cast<uint16_t>((parsed * base) + static_cast<uint8_t>(digit));
+    if (parsed > 0xFF) {
+      return false;
+    }
+  }
+  *value = parsed;
+  return true;
+}
+
+const char *AS7261Component::trim_left_(const char *text) {
+  if (text == nullptr) {
+    return nullptr;
+  }
+  while (*text != '\0' && is_space_(*text)) {
+    text++;
+  }
+  return text;
+}
+
+const char *AS7261Component::trim_right_(const char *begin, const char *end) {
+  if (begin == nullptr || end == nullptr) {
+    return begin;
+  }
+  while (end > begin && is_space_(*(end - 1))) {
+    end--;
+  }
+  return end;
+}
+
+bool AS7261Component::is_space_(char value) { return value == ' ' || value == '\t' || value == '\r' || value == '\n'; }
+
+int8_t AS7261Component::digit_value_(char value, uint8_t base) {
+  uint8_t digit = 0;
+  if (value >= '0' && value <= '9') {
+    digit = static_cast<uint8_t>(value - '0');
+  } else if (value >= 'a' && value <= 'f') {
+    digit = static_cast<uint8_t>(value - 'a' + 10);
+  } else if (value >= 'A' && value <= 'F') {
+    digit = static_cast<uint8_t>(value - 'A' + 10);
+  } else {
+    return -1;
+  }
+  return digit < base ? static_cast<int8_t>(digit) : -1;
+}
+
 void AS7261Component::start_reset_pulse_(const char *reason) {
   if (this->reset_pin_ == nullptr || this->transport_state_ == TransportState::RESET_ASSERTED) {
     return;
@@ -278,6 +571,18 @@ const char *AS7261Component::transport_result_to_string_(TransportResult result)
   }
 }
 
+const char *AS7261Component::diagnostic_state_to_string_(DiagnosticState state) {
+  switch (state) {
+    case DiagnosticState::IDLE:
+      return "idle";
+    case DiagnosticState::FIRMWARE_VERSION:
+      return "firmware_version";
+    case DiagnosticState::DEVICE_TEMPERATURE:
+      return "device_temperature";
+    default:
+      return "unknown";
+  }
+}
 const char *AS7261Component::gain_to_string_() const {
   switch (this->gain_) {
     case AS7261_GAIN_1X:

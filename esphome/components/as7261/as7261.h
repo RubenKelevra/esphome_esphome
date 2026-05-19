@@ -76,30 +76,57 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     OVERFLOW,
   };
 
+  enum class DiagnosticState : uint8_t {
+    IDLE,
+    FIRMWARE_VERSION,
+    DEVICE_TEMPERATURE,
+  };
+
   static constexpr size_t COMMAND_BUFFER_LENGTH = 48;
   static constexpr size_t LINE_BUFFER_LENGTH = 96;
   static constexpr size_t RESPONSE_BUFFER_LENGTH = 192;
   static constexpr uint32_t COMMAND_TIMEOUT_MS = 1000;
   static constexpr uint32_t RESET_PULSE_MS = 2;
+  static constexpr float DEVICE_TEMPERATURE_UNSAFE_C = 76.5f;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
+  bool diagnostic_active_() const { return this->diagnostic_state_ != DiagnosticState::IDLE; }
+  bool component_busy_() const { return this->transport_busy_() || this->diagnostic_active_(); }
   bool begin_at_command_(const char *command, uint32_t timeout_ms = COMMAND_TIMEOUT_MS);
   void poll_transport_();
+  void poll_diagnostic_readout_();
+  bool start_diagnostic_readout_();
+  bool start_diagnostic_command_(DiagnosticState state, const char *command);
+  bool start_device_temperature_readout_();
+  void handle_finished_diagnostic_command_();
+  void handle_firmware_version_response_();
+  void handle_device_temperature_response_();
   void handle_uart_byte_(uint8_t byte);
   void finish_response_line_();
+  bool finish_response_line_with_terminal_(const char *terminal, TransportResult result);
   bool append_response_line_(const char *line);
   void complete_transport_(TransportResult result);
   void clear_transport_buffers_();
   void drain_uart_();
+  const char *first_response_value_();
   void start_reset_pulse_(const char *reason);
   void release_reset_pulse_();
+  static bool parse_device_temperature_(const char *text, int16_t *temperature_c, bool *invalid);
+  static bool parse_unsigned_byte_(const char *text, uint8_t *value);
+  static bool parse_unsigned_digits_(const char *begin, const char *end, uint8_t base, uint16_t *value);
+  static const char *trim_left_(const char *text);
+  static const char *trim_right_(const char *begin, const char *end);
+  static bool is_space_(char value);
+  static int8_t digit_value_(char value, uint8_t base);
   static const char *transport_result_to_string_(TransportResult result);
+  static const char *diagnostic_state_to_string_(DiagnosticState state);
 
   InternalGPIOPin *int_pin_{nullptr};
   GPIOPin *reset_pin_{nullptr};
   TransportState transport_state_{TransportState::IDLE};
   TransportResult last_transport_result_{TransportResult::NONE};
+  DiagnosticState diagnostic_state_{DiagnosticState::IDLE};
   uint32_t transport_started_millis_{0};
   uint32_t transport_timeout_ms_{COMMAND_TIMEOUT_MS};
   uint32_t reset_started_millis_{0};
@@ -109,6 +136,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   char response_buffer_[RESPONSE_BUFFER_LENGTH]{};
   size_t response_length_{0};
   uint8_t response_line_count_{0};
+  int16_t last_device_temperature_c_{0};
+  bool device_temperature_valid_{false};
+  bool device_temperature_invalid_{false};
+  bool device_temperature_unsafe_{false};
   bool precision_mode_{false};
   bool manual_exposure_{false};
   AS7261Gain gain_{AS7261_GAIN_16X};
