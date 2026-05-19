@@ -46,6 +46,14 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   SUB_TEXT_SENSOR(firmware_version)
 #endif
 
+  enum class ManualExposureCommandState : uint8_t {
+    NOT_CONFIGURED,
+    PENDING,
+    RUNNING,
+    APPLIED,
+    FAILED,
+  };
+
  public:
   void setup() override;
   void dump_config() override;
@@ -57,6 +65,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void set_precision_mode(bool precision_mode) { this->precision_mode_ = precision_mode; }
   void set_manual_exposure(AS7261Gain gain, uint8_t integration_time) {
     this->manual_exposure_ = true;
+    this->manual_exposure_state_ = ManualExposureCommandState::PENDING;
     this->gain_ = gain;
     this->integration_time_ = integration_time;
   }
@@ -125,6 +134,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void handle_finished_sequence_step_();
   void finish_command_sequence_(SequenceStatus status);
   bool start_diagnostic_readout_();
+  bool start_manual_exposure_commands_();
+  void handle_finished_manual_exposure_commands_(SequenceStatus status);
   void handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result);
   void handle_firmware_version_response_();
   void handle_device_temperature_response_();
@@ -148,6 +159,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *transport_result_to_string_(TransportResult result);
   static const char *diagnostic_state_to_string_(DiagnosticState state);
   static const char *sequence_status_to_string_(SequenceStatus status);
+  static uint8_t gain_to_at_value_(AS7261Gain gain);
 
   InternalGPIOPin *int_pin_{nullptr};
   GPIOPin *reset_pin_{nullptr};
@@ -155,6 +167,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   TransportResult last_transport_result_{TransportResult::NONE};
   DiagnosticState diagnostic_state_{DiagnosticState::IDLE};
   SequenceStatus sequence_status_{SequenceStatus::IDLE};
+  ManualExposureCommandState manual_exposure_state_{ManualExposureCommandState::NOT_CONFIGURED};
   CommandSequenceStep command_sequence_[COMMAND_SEQUENCE_LENGTH]{};
   size_t sequence_step_count_{0};
   size_t sequence_step_index_{0};
@@ -165,6 +178,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   char line_buffer_[LINE_BUFFER_LENGTH]{};
   size_t line_length_{0};
   char response_buffer_[RESPONSE_BUFFER_LENGTH]{};
+  char manual_exposure_commands_[2][COMMAND_BUFFER_LENGTH]{};
   size_t response_length_{0};
   uint8_t response_line_count_{0};
   int16_t last_device_temperature_c_{0};

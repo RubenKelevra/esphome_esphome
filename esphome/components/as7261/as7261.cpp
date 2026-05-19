@@ -1,6 +1,7 @@
 #include "as7261.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include "esphome/core/helpers.h"
@@ -65,6 +66,13 @@ void AS7261Component::loop() {
 
 void AS7261Component::update() {
   if (this->component_busy_()) {
+    return;
+  }
+
+  if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
+    if (!this->start_manual_exposure_commands_()) {
+      ESP_LOGW(TAG, "Unable to start AS7261 manual exposure commands");
+    }
     return;
   }
 
@@ -187,7 +195,9 @@ void AS7261Component::handle_finished_sequence_step_() {
 
   const CommandSequenceStep &step = this->command_sequence_[this->sequence_step_index_];
   const TransportResult result = this->last_transport_result_;
-  this->handle_finished_diagnostic_command_(step.diagnostic_state, result);
+  if (step.diagnostic_state != DiagnosticState::IDLE) {
+    this->handle_finished_diagnostic_command_(step.diagnostic_state, result);
+  }
 
   if (result != TransportResult::OK && step.failure_policy == SequenceFailurePolicy::STOP) {
     this->finish_command_sequence_(result == TransportResult::TIMEOUT    ? SequenceStatus::TIMEOUT
@@ -214,6 +224,48 @@ void AS7261Component::finish_command_sequence_(SequenceStatus status) {
   this->sequence_step_index_ = 0;
   this->diagnostic_state_ = DiagnosticState::IDLE;
   ESP_LOGD(TAG, "AS7261 command sequence finished with %s", this->sequence_status_to_string_(status));
+  if (this->manual_exposure_state_ == ManualExposureCommandState::RUNNING) {
+    this->handle_finished_manual_exposure_commands_(status);
+  }
+}
+
+bool AS7261Component::start_manual_exposure_commands_() {
+  if (!this->manual_exposure_ || this->component_busy_()) {
+    return false;
+  }
+
+  const int gain_command_length = std::snprintf(this->manual_exposure_commands_[0], COMMAND_BUFFER_LENGTH, "ATGAIN=%u",
+                                                static_cast<unsigned>(gain_to_at_value_(this->gain_)));
+  const int integration_time_command_length =
+      std::snprintf(this->manual_exposure_commands_[1], COMMAND_BUFFER_LENGTH, "ATINTTIME=%u",
+                    static_cast<unsigned>(this->integration_time_));
+  if (gain_command_length <= 0 || gain_command_length >= static_cast<int>(COMMAND_BUFFER_LENGTH) ||
+      integration_time_command_length <= 0 ||
+      integration_time_command_length >= static_cast<int>(COMMAND_BUFFER_LENGTH)) {
+    this->manual_exposure_state_ = ManualExposureCommandState::FAILED;
+    return false;
+  }
+
+  const CommandSequenceStep steps[] = {
+      {this->manual_exposure_commands_[0], DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {this->manual_exposure_commands_[1], DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  this->manual_exposure_state_ = ManualExposureCommandState::RUNNING;
+  if (this->start_command_sequence_(steps, 2)) {
+    return true;
+  }
+  this->manual_exposure_state_ = ManualExposureCommandState::FAILED;
+  return false;
+}
+
+void AS7261Component::handle_finished_manual_exposure_commands_(SequenceStatus status) {
+  if (status == SequenceStatus::COMPLETED) {
+    this->manual_exposure_state_ = ManualExposureCommandState::APPLIED;
+    ESP_LOGD(TAG, "AS7261 manual exposure applied");
+    return;
+  }
+  this->manual_exposure_state_ = ManualExposureCommandState::FAILED;
+  ESP_LOGW(TAG, "AS7261 manual exposure commands failed with %s", this->sequence_status_to_string_(status));
 }
 
 bool AS7261Component::start_diagnostic_readout_() {
@@ -656,6 +708,21 @@ const char *AS7261Component::sequence_status_to_string_(SequenceStatus status) {
       return "overflow";
     default:
       return "unknown";
+  }
+}
+
+uint8_t AS7261Component::gain_to_at_value_(AS7261Gain gain) {
+  switch (gain) {
+    case AS7261_GAIN_1X:
+      return 0;
+    case AS7261_GAIN_3_7X:
+      return 1;
+    case AS7261_GAIN_16X:
+      return 2;
+    case AS7261_GAIN_64X:
+      return 3;
+    default:
+      return 2;
   }
 }
 
