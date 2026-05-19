@@ -60,7 +60,7 @@ void AS7261Component::dump_config() {
 
 void AS7261Component::loop() {
   this->poll_transport_();
-  this->poll_diagnostic_readout_();
+  this->poll_command_sequence_();
 }
 
 void AS7261Component::update() {
@@ -135,61 +135,117 @@ void AS7261Component::poll_transport_() {
   }
 }
 
-void AS7261Component::poll_diagnostic_readout_() {
-  if (!this->diagnostic_active_() || this->transport_busy_()) {
+void AS7261Component::poll_command_sequence_() {
+  if (!this->sequence_active_() || this->transport_busy_()) {
     return;
   }
-  this->handle_finished_diagnostic_command_();
+  this->handle_finished_sequence_step_();
+}
+
+bool AS7261Component::start_command_sequence_(const CommandSequenceStep *steps, size_t step_count) {
+  if (steps == nullptr || step_count == 0 || step_count > COMMAND_SEQUENCE_LENGTH || this->component_busy_()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < step_count; i++) {
+    if (steps[i].command == nullptr || steps[i].command[0] == '\0') {
+      return false;
+    }
+    this->command_sequence_[i] = steps[i];
+  }
+  this->sequence_step_count_ = step_count;
+  this->sequence_step_index_ = 0;
+  this->sequence_status_ = SequenceStatus::RUNNING;
+
+  if (this->start_current_sequence_step_()) {
+    return true;
+  }
+
+  this->finish_command_sequence_(SequenceStatus::FAILED);
+  return false;
+}
+
+bool AS7261Component::start_current_sequence_step_() {
+  if (!this->sequence_active_() || this->sequence_step_index_ >= this->sequence_step_count_) {
+    return false;
+  }
+
+  const CommandSequenceStep &step = this->command_sequence_[this->sequence_step_index_];
+  this->diagnostic_state_ = step.diagnostic_state;
+  if (this->begin_at_command_(step.command)) {
+    return true;
+  }
+  this->diagnostic_state_ = DiagnosticState::IDLE;
+  return false;
+}
+
+void AS7261Component::handle_finished_sequence_step_() {
+  if (this->sequence_step_index_ >= this->sequence_step_count_) {
+    this->finish_command_sequence_(SequenceStatus::COMPLETED);
+    return;
+  }
+
+  const CommandSequenceStep &step = this->command_sequence_[this->sequence_step_index_];
+  const TransportResult result = this->last_transport_result_;
+  this->handle_finished_diagnostic_command_(step.diagnostic_state, result);
+
+  if (result != TransportResult::OK && step.failure_policy == SequenceFailurePolicy::STOP) {
+    this->finish_command_sequence_(result == TransportResult::TIMEOUT    ? SequenceStatus::TIMEOUT
+                                   : result == TransportResult::OVERFLOW ? SequenceStatus::OVERFLOW
+                                                                         : SequenceStatus::FAILED);
+    return;
+  }
+
+  this->sequence_step_index_++;
+  this->diagnostic_state_ = DiagnosticState::IDLE;
+  if (this->sequence_step_index_ >= this->sequence_step_count_) {
+    this->finish_command_sequence_(SequenceStatus::COMPLETED);
+    return;
+  }
+
+  if (!this->start_current_sequence_step_()) {
+    this->finish_command_sequence_(SequenceStatus::FAILED);
+  }
+}
+
+void AS7261Component::finish_command_sequence_(SequenceStatus status) {
+  this->sequence_status_ = status;
+  this->sequence_step_count_ = 0;
+  this->sequence_step_index_ = 0;
+  this->diagnostic_state_ = DiagnosticState::IDLE;
+  ESP_LOGD(TAG, "AS7261 command sequence finished with %s", this->sequence_status_to_string_(status));
 }
 
 bool AS7261Component::start_diagnostic_readout_() {
 #ifdef USE_TEXT_SENSOR
   if (this->firmware_version_text_sensor_ != nullptr) {
-    return this->start_diagnostic_command_(DiagnosticState::FIRMWARE_VERSION, "ATVERSW");
+    const CommandSequenceStep steps[] = {
+        {"ATVERSW", DiagnosticState::FIRMWARE_VERSION, SequenceFailurePolicy::CONTINUE},
+        {"ATTEMP", DiagnosticState::DEVICE_TEMPERATURE, SequenceFailurePolicy::STOP},
+    };
+    return this->start_command_sequence_(steps, 2);
   }
 #endif
-  return this->start_device_temperature_readout_();
+  const CommandSequenceStep steps[] = {
+      {"ATTEMP", DiagnosticState::DEVICE_TEMPERATURE, SequenceFailurePolicy::STOP},
+  };
+  return this->start_command_sequence_(steps, 1);
 }
 
-bool AS7261Component::start_diagnostic_command_(DiagnosticState state, const char *command) {
-  if (this->component_busy_()) {
-    return false;
-  }
-  if (!this->begin_at_command_(command)) {
-    return false;
-  }
-  this->diagnostic_state_ = state;
-  return true;
-}
-
-bool AS7261Component::start_device_temperature_readout_() {
-  return this->start_diagnostic_command_(DiagnosticState::DEVICE_TEMPERATURE, "ATTEMP");
-}
-
-void AS7261Component::handle_finished_diagnostic_command_() {
-  const DiagnosticState finished_state = this->diagnostic_state_;
-  if (this->last_transport_result_ != TransportResult::OK) {
-    ESP_LOGW(TAG, "AS7261 diagnostic command %s failed with %s", this->diagnostic_state_to_string_(finished_state),
-             this->transport_result_to_string_(this->last_transport_result_));
-    this->diagnostic_state_ = DiagnosticState::IDLE;
-    if (finished_state == DiagnosticState::FIRMWARE_VERSION && !this->start_device_temperature_readout_()) {
-      ESP_LOGW(TAG, "Unable to continue AS7261 diagnostic temperature readout after firmware diagnostic failure");
-    }
+void AS7261Component::handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result) {
+  if (result != TransportResult::OK) {
+    ESP_LOGW(TAG, "AS7261 diagnostic command %s failed with %s", this->diagnostic_state_to_string_(state),
+             this->transport_result_to_string_(result));
     return;
   }
 
-  if (finished_state == DiagnosticState::FIRMWARE_VERSION) {
+  if (state == DiagnosticState::FIRMWARE_VERSION) {
     this->handle_firmware_version_response_();
-    this->diagnostic_state_ = DiagnosticState::IDLE;
-    if (!this->start_device_temperature_readout_()) {
-      ESP_LOGW(TAG, "Unable to continue AS7261 diagnostic temperature readout");
-    }
     return;
   }
 
-  if (finished_state == DiagnosticState::DEVICE_TEMPERATURE) {
+  if (state == DiagnosticState::DEVICE_TEMPERATURE) {
     this->handle_device_temperature_response_();
-    this->diagnostic_state_ = DiagnosticState::IDLE;
   }
 }
 void AS7261Component::handle_firmware_version_response_() {
@@ -583,6 +639,26 @@ const char *AS7261Component::diagnostic_state_to_string_(DiagnosticState state) 
       return "unknown";
   }
 }
+
+const char *AS7261Component::sequence_status_to_string_(SequenceStatus status) {
+  switch (status) {
+    case SequenceStatus::IDLE:
+      return "idle";
+    case SequenceStatus::RUNNING:
+      return "running";
+    case SequenceStatus::COMPLETED:
+      return "completed";
+    case SequenceStatus::FAILED:
+      return "failed";
+    case SequenceStatus::TIMEOUT:
+      return "timeout";
+    case SequenceStatus::OVERFLOW:
+      return "overflow";
+    default:
+      return "unknown";
+  }
+}
+
 const char *AS7261Component::gain_to_string_() const {
   switch (this->gain_) {
     case AS7261_GAIN_1X:
