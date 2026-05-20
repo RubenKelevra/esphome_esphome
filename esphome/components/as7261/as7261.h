@@ -111,6 +111,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     MANUAL_EXPOSURE,
     FRAME_TRIGGER,
     RAW_FRAME_READOUT,
+    CALIBRATED_FRAME_READOUT,
   };
 
   enum class FrameState : uint8_t {
@@ -133,6 +134,16 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     MALFORMED,
   };
 
+  enum class CalibratedFrameStatus : uint8_t {
+    INVALID,
+    RUNNING,
+    VALID,
+    FAILED,
+    TIMEOUT,
+    OVERFLOW,
+    MALFORMED,
+  };
+
   struct RawFrame {
     uint16_t x;
     uint16_t y;
@@ -140,6 +151,14 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     uint16_t near_ir;
     uint16_t dark;
     uint16_t clear;
+  };
+
+  struct CalibratedFrame {
+    float x;
+    float y;
+    float z;
+    float lux;
+    float cct;
   };
 
   struct CommandSequenceStep {
@@ -182,11 +201,14 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool start_manual_exposure_commands_();
   bool start_one_shot_frame_trigger_();
   bool start_raw_frame_readout_();
+  bool start_calibrated_frame_readout_();
   void poll_frame_trigger_();
   void handle_finished_diagnostic_readout_(SequenceStatus status);
   void handle_finished_frame_trigger_(SequenceStatus status);
   void clear_terminal_frame_state_();
   void handle_finished_raw_frame_readout_(SequenceStatus status);
+  void handle_finished_calibrated_frame_readout_(SequenceStatus status);
+  bool handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result);
   bool frame_int_ready_() const;
   uint32_t calculate_frame_watchdog_timeout_ms_() const;
   void handle_finished_manual_exposure_commands_(SequenceStatus status);
@@ -210,6 +232,11 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static bool consume_raw_frame_separator_(const char **cursor);
   static bool parse_unsigned_u16_(const char *begin, const char *end, uint16_t *value);
   static bool parse_unsigned_digits_(const char *begin, const char *end, uint8_t base, uint16_t *value);
+  static bool parse_calibrated_xyz_(const char *text, CalibratedFrame *frame);
+  static bool parse_calibrated_xyz_field_(const char **cursor, float *value, bool expect_separator);
+  static bool consume_calibrated_frame_separator_(const char **cursor);
+  static bool parse_calibrated_value_(const char *text, float *value);
+  static bool parse_finite_float_(const char *begin, const char *end, float *value);
   static const char *trim_left_(const char *text);
   static const char *trim_right_(const char *begin, const char *end);
   static bool is_space_(char value);
@@ -219,6 +246,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *sequence_status_to_string_(SequenceStatus status);
   static const char *frame_state_to_string_(FrameState state);
   static const char *raw_frame_status_to_string_(RawFrameStatus status);
+  static const char *calibrated_frame_status_to_string_(CalibratedFrameStatus status);
   static uint8_t gain_to_at_value_(AS7261Gain gain);
 
   InternalGPIOPin *int_pin_{nullptr};
@@ -247,6 +275,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   uint8_t response_line_count_{0};
   RawFrame raw_frame_{};
   RawFrameStatus raw_frame_status_{RawFrameStatus::INVALID};
+  CalibratedFrame calibrated_frame_{};
+  CalibratedFrameStatus calibrated_frame_status_{CalibratedFrameStatus::INVALID};
   int16_t last_device_temperature_c_{0};
   bool device_temperature_valid_{false};
   bool device_temperature_invalid_{false};

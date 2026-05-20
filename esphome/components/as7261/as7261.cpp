@@ -199,6 +199,11 @@ void AS7261Component::handle_finished_sequence_step_() {
   if (step.diagnostic_state != DiagnosticState::IDLE) {
     this->handle_finished_diagnostic_command_(step.diagnostic_state, result);
   }
+  if (this->sequence_owner_ == SequenceOwner::CALIBRATED_FRAME_READOUT &&
+      !this->handle_finished_calibrated_frame_command_(this->sequence_step_index_, result)) {
+    this->finish_command_sequence_(SequenceStatus::FAILED);
+    return;
+  }
 
   if (result != TransportResult::OK && step.failure_policy == SequenceFailurePolicy::STOP) {
     this->finish_command_sequence_(result == TransportResult::TIMEOUT    ? SequenceStatus::TIMEOUT
@@ -240,6 +245,9 @@ void AS7261Component::finish_command_sequence_(SequenceStatus status) {
       break;
     case SequenceOwner::RAW_FRAME_READOUT:
       this->handle_finished_raw_frame_readout_(status);
+      break;
+    case SequenceOwner::CALIBRATED_FRAME_READOUT:
+      this->handle_finished_calibrated_frame_readout_(status);
       break;
     case SequenceOwner::NONE:
       break;
@@ -376,6 +384,8 @@ void AS7261Component::poll_frame_trigger_() {
     if (!this->start_raw_frame_readout_()) {
       this->raw_frame_ = RawFrame{};
       this->raw_frame_status_ = RawFrameStatus::FAILED;
+      this->calibrated_frame_ = CalibratedFrame{};
+      this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
       this->clear_terminal_frame_state_();
       ESP_LOGW(TAG, "Unable to start AS7261 raw frame readout");
     }
@@ -385,6 +395,8 @@ void AS7261Component::poll_frame_trigger_() {
   if (this->frame_state_ == FrameState::TIMEOUT) {
     this->raw_frame_ = RawFrame{};
     this->raw_frame_status_ = RawFrameStatus::TIMEOUT;
+    this->calibrated_frame_ = CalibratedFrame{};
+    this->calibrated_frame_status_ = CalibratedFrameStatus::TIMEOUT;
     this->clear_terminal_frame_state_();
     return;
   }
@@ -392,6 +404,8 @@ void AS7261Component::poll_frame_trigger_() {
   if (this->frame_state_ == FrameState::ERROR) {
     this->raw_frame_ = RawFrame{};
     this->raw_frame_status_ = RawFrameStatus::FAILED;
+    this->calibrated_frame_ = CalibratedFrame{};
+    this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
     this->clear_terminal_frame_state_();
     return;
   }
@@ -420,6 +434,8 @@ bool AS7261Component::start_raw_frame_readout_() {
       {"ATDATA", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
   this->raw_frame_ = RawFrame{};
+  this->calibrated_frame_ = CalibratedFrame{};
+  this->calibrated_frame_status_ = CalibratedFrameStatus::INVALID;
   this->frame_state_ = FrameState::READOUT_RUNNING;
   this->raw_frame_status_ = RawFrameStatus::RUNNING;
   this->sequence_owner_ = SequenceOwner::RAW_FRAME_READOUT;
@@ -439,6 +455,10 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->raw_frame_status_ = status == SequenceStatus::TIMEOUT    ? RawFrameStatus::TIMEOUT
                               : status == SequenceStatus::OVERFLOW ? RawFrameStatus::OVERFLOW
                                                                    : RawFrameStatus::FAILED;
+    this->calibrated_frame_ = CalibratedFrame{};
+    this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
+                                     : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
+                                                                          : CalibratedFrameStatus::FAILED;
     this->clear_terminal_frame_state_();
     ESP_LOGW(TAG, "AS7261 raw frame readout failed with %s", this->sequence_status_to_string_(status));
     return;
@@ -448,6 +468,8 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
   if (!parse_raw_frame_(this->first_response_value_(), &frame)) {
     this->raw_frame_ = RawFrame{};
     this->raw_frame_status_ = RawFrameStatus::MALFORMED;
+    this->calibrated_frame_ = CalibratedFrame{};
+    this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
     this->clear_terminal_frame_state_();
     ESP_LOGW(TAG, "Unable to parse AS7261 raw frame response: %s", this->response_buffer_);
     return;
@@ -460,6 +482,95 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
            static_cast<unsigned>(this->raw_frame_.x), static_cast<unsigned>(this->raw_frame_.y),
            static_cast<unsigned>(this->raw_frame_.z), static_cast<unsigned>(this->raw_frame_.near_ir),
            static_cast<unsigned>(this->raw_frame_.dark), static_cast<unsigned>(this->raw_frame_.clear));
+  if (!this->start_calibrated_frame_readout_()) {
+    this->calibrated_frame_ = CalibratedFrame{};
+    this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+    ESP_LOGW(TAG, "Unable to start AS7261 calibrated frame readout");
+  }
+}
+
+bool AS7261Component::start_calibrated_frame_readout_() {
+  if (this->transport_busy_() || this->sequence_active_() || this->raw_frame_status_ != RawFrameStatus::VALID) {
+    return false;
+  }
+
+  const CommandSequenceStep steps[] = {
+      {"ATXYZC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATLUXC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATCCTC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  this->calibrated_frame_ = CalibratedFrame{};
+  this->calibrated_frame_status_ = CalibratedFrameStatus::RUNNING;
+  this->sequence_owner_ = SequenceOwner::CALIBRATED_FRAME_READOUT;
+  if (this->start_command_sequence_(steps, 3)) {
+    return true;
+  }
+
+  this->sequence_owner_ = SequenceOwner::NONE;
+  this->calibrated_frame_ = CalibratedFrame{};
+  this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+  return false;
+}
+
+bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result) {
+  if (result != TransportResult::OK) {
+    return true;
+  }
+
+  const char *const value = this->first_response_value_();
+  if (step_index == 0) {
+    CalibratedFrame xyz{};
+    if (!parse_calibrated_xyz_(value, &xyz)) {
+      ESP_LOGW(TAG, "Unable to parse AS7261 calibrated XYZ response: %s", value == nullptr ? "<empty>" : value);
+      this->calibrated_frame_ = CalibratedFrame{};
+      this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+      return false;
+    }
+    this->calibrated_frame_.x = xyz.x;
+    this->calibrated_frame_.y = xyz.y;
+    this->calibrated_frame_.z = xyz.z;
+    return true;
+  }
+
+  float parsed = 0.0f;
+  if (!parse_calibrated_value_(value, &parsed)) {
+    ESP_LOGW(TAG, "Unable to parse AS7261 calibrated %s response: %s", step_index == 1 ? "lux" : "CCT",
+             value == nullptr ? "<empty>" : value);
+    this->calibrated_frame_ = CalibratedFrame{};
+    this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+    return false;
+  }
+  if (step_index == 1) {
+    this->calibrated_frame_.lux = parsed;
+    return true;
+  }
+  if (step_index == 2) {
+    this->calibrated_frame_.cct = parsed;
+    return true;
+  }
+
+  this->calibrated_frame_ = CalibratedFrame{};
+  this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+  return false;
+}
+
+void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus status) {
+  if (status != SequenceStatus::COMPLETED) {
+    if (this->calibrated_frame_status_ != CalibratedFrameStatus::MALFORMED) {
+      this->calibrated_frame_ = CalibratedFrame{};
+      this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
+                                       : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
+                                                                            : CalibratedFrameStatus::FAILED;
+    }
+    ESP_LOGW(TAG, "AS7261 calibrated frame readout failed with %s",
+             this->calibrated_frame_status_to_string_(this->calibrated_frame_status_));
+    return;
+  }
+
+  this->calibrated_frame_status_ = CalibratedFrameStatus::VALID;
+  ESP_LOGD(TAG, "AS7261 calibrated frame stored: X=%f Y=%f Z=%f Lux=%f CCT=%f", this->calibrated_frame_.x,
+           this->calibrated_frame_.y, this->calibrated_frame_.z, this->calibrated_frame_.lux,
+           this->calibrated_frame_.cct);
 }
 
 void AS7261Component::clear_terminal_frame_state_() {
@@ -869,6 +980,149 @@ bool AS7261Component::parse_unsigned_digits_(const char *begin, const char *end,
   return true;
 }
 
+bool AS7261Component::parse_calibrated_xyz_(const char *text, CalibratedFrame *frame) {
+  if (text == nullptr || frame == nullptr) {
+    return false;
+  }
+
+  CalibratedFrame parsed{};
+  const char *cursor = text;
+  if (!parse_calibrated_xyz_field_(&cursor, &parsed.x, true) ||
+      !parse_calibrated_xyz_field_(&cursor, &parsed.y, true) ||
+      !parse_calibrated_xyz_field_(&cursor, &parsed.z, false)) {
+    return false;
+  }
+
+  cursor = trim_left_(cursor);
+  if (*cursor != '\0' && *cursor != '\n') {
+    return false;
+  }
+
+  frame->x = parsed.x;
+  frame->y = parsed.y;
+  frame->z = parsed.z;
+  return true;
+}
+
+bool AS7261Component::parse_calibrated_xyz_field_(const char **cursor, float *value, bool expect_separator) {
+  if (cursor == nullptr || *cursor == nullptr || value == nullptr) {
+    return false;
+  }
+
+  const char *const begin = trim_left_(*cursor);
+  const char *end = begin;
+  while (*end != '\0' && *end != '\n' && *end != ',') {
+    end++;
+  }
+  const char *const value_end = trim_right_(begin, end);
+  if (!parse_finite_float_(begin, value_end, value)) {
+    return false;
+  }
+
+  *cursor = end;
+  return expect_separator ? consume_calibrated_frame_separator_(cursor) : true;
+}
+
+bool AS7261Component::consume_calibrated_frame_separator_(const char **cursor) {
+  if (cursor == nullptr || *cursor == nullptr || **cursor != ',') {
+    return false;
+  }
+  *cursor += 1;
+  return true;
+}
+
+bool AS7261Component::parse_calibrated_value_(const char *text, float *value) {
+  if (text == nullptr || value == nullptr) {
+    return false;
+  }
+
+  const char *begin = trim_left_(text);
+  const char *end = begin;
+  while (*end != '\0' && *end != '\n') {
+    end++;
+  }
+  end = trim_right_(begin, end);
+  return parse_finite_float_(begin, end, value);
+}
+
+bool AS7261Component::parse_finite_float_(const char *begin, const char *end, float *value) {
+  if (begin == nullptr || end == nullptr || value == nullptr || begin >= end) {
+    return false;
+  }
+
+  const char *cursor = begin;
+  bool negative = false;
+  if (*cursor == '+' || *cursor == '-') {
+    negative = *cursor == '-';
+    cursor++;
+  }
+
+  float parsed = 0.0f;
+  bool saw_digit = false;
+  while (cursor < end && *cursor >= '0' && *cursor <= '9') {
+    saw_digit = true;
+    parsed = (parsed * 10.0f) + static_cast<float>(*cursor - '0');
+    if (!std::isfinite(parsed)) {
+      return false;
+    }
+    cursor++;
+  }
+
+  if (cursor < end && *cursor == '.') {
+    cursor++;
+    float scale = 0.1f;
+    while (cursor < end && *cursor >= '0' && *cursor <= '9') {
+      saw_digit = true;
+      parsed += static_cast<float>(*cursor - '0') * scale;
+      if (!std::isfinite(parsed)) {
+        return false;
+      }
+      scale *= 0.1f;
+      cursor++;
+    }
+  }
+
+  if (!saw_digit) {
+    return false;
+  }
+
+  int16_t exponent = 0;
+  bool exponent_negative = false;
+  if (cursor < end && (*cursor == 'e' || *cursor == 'E')) {
+    cursor++;
+    if (cursor < end && (*cursor == '+' || *cursor == '-')) {
+      exponent_negative = *cursor == '-';
+      cursor++;
+    }
+    if (cursor >= end || *cursor < '0' || *cursor > '9') {
+      return false;
+    }
+    while (cursor < end && *cursor >= '0' && *cursor <= '9') {
+      if (exponent < 64) {
+        exponent = static_cast<int16_t>((exponent * 10) + (*cursor - '0'));
+        if (exponent > 64) {
+          exponent = 64;
+        }
+      }
+      cursor++;
+    }
+  }
+
+  if (cursor != end) {
+    return false;
+  }
+
+  for (int16_t i = 0; i < exponent; i++) {
+    parsed *= exponent_negative ? 0.1f : 10.0f;
+    if (!std::isfinite(parsed)) {
+      return false;
+    }
+  }
+
+  *value = negative ? -parsed : parsed;
+  return std::isfinite(*value);
+}
+
 const char *AS7261Component::trim_left_(const char *text) {
   if (text == nullptr) {
     return nullptr;
@@ -1012,6 +1266,27 @@ const char *AS7261Component::raw_frame_status_to_string_(RawFrameStatus status) 
     case RawFrameStatus::OVERFLOW:
       return "overflow";
     case RawFrameStatus::MALFORMED:
+      return "malformed";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::calibrated_frame_status_to_string_(CalibratedFrameStatus status) {
+  switch (status) {
+    case CalibratedFrameStatus::INVALID:
+      return "invalid";
+    case CalibratedFrameStatus::RUNNING:
+      return "running";
+    case CalibratedFrameStatus::VALID:
+      return "valid";
+    case CalibratedFrameStatus::FAILED:
+      return "failed";
+    case CalibratedFrameStatus::TIMEOUT:
+      return "timeout";
+    case CalibratedFrameStatus::OVERFLOW:
+      return "overflow";
+    case CalibratedFrameStatus::MALFORMED:
       return "malformed";
     default:
       return "unknown";
