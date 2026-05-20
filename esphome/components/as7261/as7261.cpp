@@ -62,6 +62,7 @@ void AS7261Component::dump_config() {
 void AS7261Component::loop() {
   this->poll_transport_();
   this->poll_command_sequence_();
+  this->poll_frame_trigger_();
 }
 
 void AS7261Component::update() {
@@ -219,13 +220,26 @@ void AS7261Component::handle_finished_sequence_step_() {
 }
 
 void AS7261Component::finish_command_sequence_(SequenceStatus status) {
+  const SequenceOwner owner = this->sequence_owner_;
   this->sequence_status_ = status;
   this->sequence_step_count_ = 0;
   this->sequence_step_index_ = 0;
   this->diagnostic_state_ = DiagnosticState::IDLE;
+  this->sequence_owner_ = SequenceOwner::NONE;
   ESP_LOGD(TAG, "AS7261 command sequence finished with %s", this->sequence_status_to_string_(status));
-  if (this->manual_exposure_state_ == ManualExposureCommandState::RUNNING) {
-    this->handle_finished_manual_exposure_commands_(status);
+
+  switch (owner) {
+    case SequenceOwner::DIAGNOSTIC_READOUT:
+      this->handle_finished_diagnostic_readout_(status);
+      break;
+    case SequenceOwner::MANUAL_EXPOSURE:
+      this->handle_finished_manual_exposure_commands_(status);
+      break;
+    case SequenceOwner::FRAME_TRIGGER:
+      this->handle_finished_frame_trigger_(status);
+      break;
+    case SequenceOwner::NONE:
+      break;
   }
 }
 
@@ -251,10 +265,12 @@ bool AS7261Component::start_manual_exposure_commands_() {
       {this->manual_exposure_commands_[1], DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
   this->manual_exposure_state_ = ManualExposureCommandState::RUNNING;
+  this->sequence_owner_ = SequenceOwner::MANUAL_EXPOSURE;
   if (this->start_command_sequence_(steps, 2)) {
     return true;
   }
   this->manual_exposure_state_ = ManualExposureCommandState::FAILED;
+  this->sequence_owner_ = SequenceOwner::NONE;
   return false;
 }
 
@@ -275,13 +291,103 @@ bool AS7261Component::start_diagnostic_readout_() {
         {"ATVERSW", DiagnosticState::FIRMWARE_VERSION, SequenceFailurePolicy::CONTINUE},
         {"ATTEMP", DiagnosticState::DEVICE_TEMPERATURE, SequenceFailurePolicy::STOP},
     };
-    return this->start_command_sequence_(steps, 2);
+    this->sequence_owner_ = SequenceOwner::DIAGNOSTIC_READOUT;
+    if (this->start_command_sequence_(steps, 2)) {
+      return true;
+    }
+    this->sequence_owner_ = SequenceOwner::NONE;
+    return false;
   }
 #endif
   const CommandSequenceStep steps[] = {
       {"ATTEMP", DiagnosticState::DEVICE_TEMPERATURE, SequenceFailurePolicy::STOP},
   };
-  return this->start_command_sequence_(steps, 1);
+  this->sequence_owner_ = SequenceOwner::DIAGNOSTIC_READOUT;
+  if (this->start_command_sequence_(steps, 1)) {
+    return true;
+  }
+  this->sequence_owner_ = SequenceOwner::NONE;
+  return false;
+}
+
+void AS7261Component::handle_finished_diagnostic_readout_(SequenceStatus status) {
+  if (status != SequenceStatus::COMPLETED) {
+    ESP_LOGW(TAG, "AS7261 diagnostic readout failed with %s", this->sequence_status_to_string_(status));
+    return;
+  }
+  if (this->manual_exposure_ && this->manual_exposure_state_ != ManualExposureCommandState::APPLIED) {
+    ESP_LOGW(TAG, "Skipping AS7261 one-shot trigger because manual exposure is not applied");
+    return;
+  }
+  if (this->device_temperature_unsafe_) {
+    ESP_LOGW(TAG, "Skipping AS7261 one-shot trigger while device temperature is unsafe");
+    return;
+  }
+  if (!this->start_one_shot_frame_trigger_()) {
+    ESP_LOGW(TAG, "Unable to start AS7261 one-shot frame trigger");
+    this->frame_state_ = FrameState::ERROR;
+  }
+}
+
+bool AS7261Component::start_one_shot_frame_trigger_() {
+  if (this->component_busy_() || this->frame_state_ != FrameState::IDLE) {
+    return false;
+  }
+  const CommandSequenceStep steps[] = {
+      {"ATTCSMD=3", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  this->frame_state_ = FrameState::TRIGGER_RUNNING;
+  this->sequence_owner_ = SequenceOwner::FRAME_TRIGGER;
+  if (this->start_command_sequence_(steps, 1)) {
+    return true;
+  }
+  this->sequence_owner_ = SequenceOwner::NONE;
+  this->frame_state_ = FrameState::ERROR;
+  return false;
+}
+
+void AS7261Component::handle_finished_frame_trigger_(SequenceStatus status) {
+  if (status != SequenceStatus::COMPLETED) {
+    this->frame_state_ = FrameState::ERROR;
+    ESP_LOGW(TAG, "AS7261 one-shot trigger failed with %s", this->sequence_status_to_string_(status));
+    return;
+  }
+  if (this->int_pin_ == nullptr) {
+    this->frame_state_ = FrameState::ERROR;
+    ESP_LOGE(TAG, "AS7261 INT pin is not configured; cannot wait for frame completion");
+    return;
+  }
+  this->frame_wait_started_millis_ = millis();
+  this->frame_watchdog_timeout_ms_ = this->calculate_frame_watchdog_timeout_ms_();
+  this->frame_state_ = FrameState::WAITING_INT;
+  ESP_LOGD(TAG, "AS7261 one-shot trigger sent; waiting up to %u ms for INT",
+           static_cast<unsigned>(this->frame_watchdog_timeout_ms_));
+}
+
+void AS7261Component::poll_frame_trigger_() {
+  if (this->frame_state_ != FrameState::WAITING_INT) {
+    return;
+  }
+  if (this->frame_int_ready_()) {
+    this->frame_state_ = FrameState::READY;
+    ESP_LOGD(TAG, "AS7261 one-shot frame is ready");
+    return;
+  }
+  if (millis() - this->frame_wait_started_millis_ >= this->frame_watchdog_timeout_ms_) {
+    this->frame_state_ = FrameState::TIMEOUT;
+    ESP_LOGW(TAG, "AS7261 one-shot frame timed out waiting for INT after %u ms",
+             static_cast<unsigned>(this->frame_watchdog_timeout_ms_));
+  }
+}
+
+bool AS7261Component::frame_int_ready_() const { return this->int_pin_ != nullptr && this->int_pin_->digital_read(); }
+
+uint32_t AS7261Component::calculate_frame_watchdog_timeout_ms_() const {
+  const uint8_t integration_time = this->manual_exposure_ && this->integration_time_ != 0
+                                       ? this->integration_time_
+                                       : AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
+  const uint32_t conversion_time_us = 2UL * static_cast<uint32_t>(integration_time) * AS7261_INTEGRATION_TIME_STEP_US;
+  return ((conversion_time_us + 999UL) / 1000UL) + FRAME_WATCHDOG_MARGIN_MS;
 }
 
 void AS7261Component::handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result) {
@@ -706,6 +812,25 @@ const char *AS7261Component::sequence_status_to_string_(SequenceStatus status) {
       return "timeout";
     case SequenceStatus::OVERFLOW:
       return "overflow";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::frame_state_to_string_(FrameState state) {
+  switch (state) {
+    case FrameState::IDLE:
+      return "idle";
+    case FrameState::TRIGGER_RUNNING:
+      return "trigger_running";
+    case FrameState::WAITING_INT:
+      return "waiting_int";
+    case FrameState::READY:
+      return "ready";
+    case FrameState::TIMEOUT:
+      return "timeout";
+    case FrameState::ERROR:
+      return "error";
     default:
       return "unknown";
   }

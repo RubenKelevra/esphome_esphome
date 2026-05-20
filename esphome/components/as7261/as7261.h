@@ -105,6 +105,22 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     CONTINUE,
   };
 
+  enum class SequenceOwner : uint8_t {
+    NONE,
+    DIAGNOSTIC_READOUT,
+    MANUAL_EXPOSURE,
+    FRAME_TRIGGER,
+  };
+
+  enum class FrameState : uint8_t {
+    IDLE,
+    TRIGGER_RUNNING,
+    WAITING_INT,
+    READY,
+    TIMEOUT,
+    ERROR,
+  };
+
   struct CommandSequenceStep {
     const char *command;
     DiagnosticState diagnostic_state;
@@ -118,6 +134,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr uint32_t COMMAND_TIMEOUT_MS = 1000;
   static constexpr uint32_t RESET_PULSE_MS = 2;
   static constexpr float DEVICE_TEMPERATURE_UNSAFE_C = 76.5f;
+  static constexpr uint32_t AS7261_INTEGRATION_TIME_STEP_US = 2800;
+  static constexpr uint8_t AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME = 255;
+  static constexpr uint32_t FRAME_WATCHDOG_MARGIN_MS = 250;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
@@ -125,7 +144,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool diagnostic_active_() const {
     return this->sequence_active_() || this->diagnostic_state_ != DiagnosticState::IDLE;
   }
-  bool component_busy_() const { return this->transport_busy_() || this->sequence_active_(); }
+  bool frame_status_active_() const {
+    return this->frame_state_ != FrameState::IDLE && this->frame_state_ != FrameState::TRIGGER_RUNNING;
+  }
+  bool component_busy_() const {
+    return this->transport_busy_() || this->sequence_active_() || this->frame_status_active_();
+  }
   bool begin_at_command_(const char *command, uint32_t timeout_ms = COMMAND_TIMEOUT_MS);
   void poll_transport_();
   void poll_command_sequence_();
@@ -135,6 +159,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void finish_command_sequence_(SequenceStatus status);
   bool start_diagnostic_readout_();
   bool start_manual_exposure_commands_();
+  bool start_one_shot_frame_trigger_();
+  void poll_frame_trigger_();
+  void handle_finished_diagnostic_readout_(SequenceStatus status);
+  void handle_finished_frame_trigger_(SequenceStatus status);
+  bool frame_int_ready_() const;
+  uint32_t calculate_frame_watchdog_timeout_ms_() const;
   void handle_finished_manual_exposure_commands_(SequenceStatus status);
   void handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result);
   void handle_firmware_version_response_();
@@ -159,6 +189,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *transport_result_to_string_(TransportResult result);
   static const char *diagnostic_state_to_string_(DiagnosticState state);
   static const char *sequence_status_to_string_(SequenceStatus status);
+  static const char *frame_state_to_string_(FrameState state);
   static uint8_t gain_to_at_value_(AS7261Gain gain);
 
   InternalGPIOPin *int_pin_{nullptr};
@@ -168,6 +199,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   DiagnosticState diagnostic_state_{DiagnosticState::IDLE};
   SequenceStatus sequence_status_{SequenceStatus::IDLE};
   ManualExposureCommandState manual_exposure_state_{ManualExposureCommandState::NOT_CONFIGURED};
+  SequenceOwner sequence_owner_{SequenceOwner::NONE};
+  FrameState frame_state_{FrameState::IDLE};
   CommandSequenceStep command_sequence_[COMMAND_SEQUENCE_LENGTH]{};
   size_t sequence_step_count_{0};
   size_t sequence_step_index_{0};
@@ -180,6 +213,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   char response_buffer_[RESPONSE_BUFFER_LENGTH]{};
   char manual_exposure_commands_[2][COMMAND_BUFFER_LENGTH]{};
   size_t response_length_{0};
+  uint32_t frame_wait_started_millis_{0};
+  uint32_t frame_watchdog_timeout_ms_{0};
   uint8_t response_line_count_{0};
   int16_t last_device_temperature_c_{0};
   bool device_temperature_valid_{false};
