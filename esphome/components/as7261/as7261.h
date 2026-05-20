@@ -144,6 +144,15 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     MALFORMED,
   };
 
+  enum class DerivedColorStatus : uint8_t {
+    INVALID,
+    VALID,
+    FAILED,
+    TIMEOUT,
+    OVERFLOW,
+    MALFORMED,
+  };
+
   struct RawFrame {
     uint16_t x;
     uint16_t y;
@@ -159,6 +168,23 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     float z;
     float lux;
     float cct;
+  };
+
+  struct OklabColor {
+    float l;
+    float a;
+    float b;
+  };
+
+  struct OklchColor {
+    float l;
+    float c;
+    float h;
+  };
+
+  struct DerivedColorFrame {
+    OklabColor oklab;
+    OklchColor oklch;
   };
 
   struct CommandSequenceStep {
@@ -177,6 +203,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr uint32_t AS7261_INTEGRATION_TIME_STEP_US = 2800;
   static constexpr uint8_t AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME = 255;
   static constexpr uint32_t FRAME_WATCHDOG_MARGIN_MS = 250;
+  static constexpr float OKLAB_REFERENCE_ILLUMINANCE_LX = 1000.0f;
+  static constexpr float OKLCH_ZERO_CHROMA_HUE_DEGREES = 0.0f;
+  static constexpr float DEGREES_PER_RADIAN = 57.29577951308232f;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
@@ -208,6 +237,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void clear_terminal_frame_state_();
   void handle_finished_raw_frame_readout_(SequenceStatus status);
   void handle_finished_calibrated_frame_readout_(SequenceStatus status);
+  void clear_derived_color_(DerivedColorStatus status);
+  bool derive_oklab_oklch_();
+  static bool calibrated_xyz_valid_for_oklab_(const CalibratedFrame &frame);
   bool handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result);
   bool frame_int_ready_() const;
   uint32_t calculate_frame_watchdog_timeout_ms_() const;
@@ -247,6 +279,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *frame_state_to_string_(FrameState state);
   static const char *raw_frame_status_to_string_(RawFrameStatus status);
   static const char *calibrated_frame_status_to_string_(CalibratedFrameStatus status);
+  static const char *derived_color_status_to_string_(DerivedColorStatus status);
   static uint8_t gain_to_at_value_(AS7261Gain gain);
 
   InternalGPIOPin *int_pin_{nullptr};
@@ -277,6 +310,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   RawFrameStatus raw_frame_status_{RawFrameStatus::INVALID};
   CalibratedFrame calibrated_frame_{};
   CalibratedFrameStatus calibrated_frame_status_{CalibratedFrameStatus::INVALID};
+  DerivedColorFrame derived_color_frame_{};
+  DerivedColorStatus derived_color_status_{DerivedColorStatus::INVALID};
   int16_t last_device_temperature_c_{0};
   bool device_temperature_valid_{false};
   bool device_temperature_invalid_{false};

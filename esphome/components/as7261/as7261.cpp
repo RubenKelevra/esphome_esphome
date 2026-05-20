@@ -386,6 +386,7 @@ void AS7261Component::poll_frame_trigger_() {
       this->raw_frame_status_ = RawFrameStatus::FAILED;
       this->calibrated_frame_ = CalibratedFrame{};
       this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+      this->clear_derived_color_(DerivedColorStatus::FAILED);
       this->clear_terminal_frame_state_();
       ESP_LOGW(TAG, "Unable to start AS7261 raw frame readout");
     }
@@ -397,6 +398,7 @@ void AS7261Component::poll_frame_trigger_() {
     this->raw_frame_status_ = RawFrameStatus::TIMEOUT;
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::TIMEOUT;
+    this->clear_derived_color_(DerivedColorStatus::TIMEOUT);
     this->clear_terminal_frame_state_();
     return;
   }
@@ -406,6 +408,7 @@ void AS7261Component::poll_frame_trigger_() {
     this->raw_frame_status_ = RawFrameStatus::FAILED;
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+    this->clear_derived_color_(DerivedColorStatus::FAILED);
     this->clear_terminal_frame_state_();
     return;
   }
@@ -436,6 +439,7 @@ bool AS7261Component::start_raw_frame_readout_() {
   this->raw_frame_ = RawFrame{};
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::INVALID;
+  this->clear_derived_color_(DerivedColorStatus::INVALID);
   this->frame_state_ = FrameState::READOUT_RUNNING;
   this->raw_frame_status_ = RawFrameStatus::RUNNING;
   this->sequence_owner_ = SequenceOwner::RAW_FRAME_READOUT;
@@ -445,6 +449,7 @@ bool AS7261Component::start_raw_frame_readout_() {
 
   this->sequence_owner_ = SequenceOwner::NONE;
   this->raw_frame_status_ = RawFrameStatus::FAILED;
+  this->clear_derived_color_(DerivedColorStatus::FAILED);
   this->clear_terminal_frame_state_();
   return false;
 }
@@ -459,6 +464,9 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
                                      : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
                                                                           : CalibratedFrameStatus::FAILED;
+    this->clear_derived_color_(status == SequenceStatus::TIMEOUT    ? DerivedColorStatus::TIMEOUT
+                               : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
+                                                                    : DerivedColorStatus::FAILED);
     this->clear_terminal_frame_state_();
     ESP_LOGW(TAG, "AS7261 raw frame readout failed with %s", this->sequence_status_to_string_(status));
     return;
@@ -470,6 +478,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->raw_frame_status_ = RawFrameStatus::MALFORMED;
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+    this->clear_derived_color_(DerivedColorStatus::MALFORMED);
     this->clear_terminal_frame_state_();
     ESP_LOGW(TAG, "Unable to parse AS7261 raw frame response: %s", this->response_buffer_);
     return;
@@ -485,6 +494,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
   if (!this->start_calibrated_frame_readout_()) {
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+    this->clear_derived_color_(DerivedColorStatus::FAILED);
     ESP_LOGW(TAG, "Unable to start AS7261 calibrated frame readout");
   }
 }
@@ -501,6 +511,7 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   };
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::RUNNING;
+  this->clear_derived_color_(DerivedColorStatus::INVALID);
   this->sequence_owner_ = SequenceOwner::CALIBRATED_FRAME_READOUT;
   if (this->start_command_sequence_(steps, 3)) {
     return true;
@@ -509,6 +520,7 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   this->sequence_owner_ = SequenceOwner::NONE;
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+  this->clear_derived_color_(DerivedColorStatus::FAILED);
   return false;
 }
 
@@ -524,6 +536,7 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
       ESP_LOGW(TAG, "Unable to parse AS7261 calibrated XYZ response: %s", value == nullptr ? "<empty>" : value);
       this->calibrated_frame_ = CalibratedFrame{};
       this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+      this->clear_derived_color_(DerivedColorStatus::MALFORMED);
       return false;
     }
     this->calibrated_frame_.x = xyz.x;
@@ -538,6 +551,7 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
              value == nullptr ? "<empty>" : value);
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+    this->clear_derived_color_(DerivedColorStatus::MALFORMED);
     return false;
   }
   if (step_index == 1) {
@@ -551,6 +565,7 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
 
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+  this->clear_derived_color_(DerivedColorStatus::MALFORMED);
   return false;
 }
 
@@ -561,6 +576,9 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
       this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
                                        : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
                                                                             : CalibratedFrameStatus::FAILED;
+      this->clear_derived_color_(status == SequenceStatus::TIMEOUT    ? DerivedColorStatus::TIMEOUT
+                                 : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
+                                                                      : DerivedColorStatus::FAILED);
     }
     ESP_LOGW(TAG, "AS7261 calibrated frame readout failed with %s",
              this->calibrated_frame_status_to_string_(this->calibrated_frame_status_));
@@ -571,6 +589,71 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
   ESP_LOGD(TAG, "AS7261 calibrated frame stored: X=%f Y=%f Z=%f Lux=%f CCT=%f", this->calibrated_frame_.x,
            this->calibrated_frame_.y, this->calibrated_frame_.z, this->calibrated_frame_.lux,
            this->calibrated_frame_.cct);
+  if (!this->derive_oklab_oklch_()) {
+    ESP_LOGW(TAG, "AS7261 OKLab/OKLCH derivation failed with %s",
+             this->derived_color_status_to_string_(this->derived_color_status_));
+  }
+}
+
+void AS7261Component::clear_derived_color_(DerivedColorStatus status) {
+  this->derived_color_frame_ = DerivedColorFrame{};
+  this->derived_color_status_ = status;
+}
+
+bool AS7261Component::derive_oklab_oklch_() {
+  if (this->calibrated_frame_status_ != CalibratedFrameStatus::VALID ||
+      !calibrated_xyz_valid_for_oklab_(this->calibrated_frame_)) {
+    this->clear_derived_color_(DerivedColorStatus::MALFORMED);
+    return false;
+  }
+
+  const float normalized_x = this->calibrated_frame_.x / OKLAB_REFERENCE_ILLUMINANCE_LX;
+  const float normalized_y = this->calibrated_frame_.y / OKLAB_REFERENCE_ILLUMINANCE_LX;
+  const float normalized_z = this->calibrated_frame_.z / OKLAB_REFERENCE_ILLUMINANCE_LX;
+
+  const float l =
+      std::cbrt((0.8189330101f * normalized_x) + (0.3618667424f * normalized_y) - (0.1288597137f * normalized_z));
+  const float m =
+      std::cbrt((0.0329845436f * normalized_x) + (0.9293118715f * normalized_y) + (0.0361456387f * normalized_z));
+  const float s =
+      std::cbrt((0.0482003018f * normalized_x) + (0.2643662691f * normalized_y) + (0.6338517070f * normalized_z));
+
+  DerivedColorFrame derived{};
+  derived.oklab.l = (0.2104542553f * l) + (0.7936177850f * m) - (0.0040720468f * s);
+  derived.oklab.a = (1.9779984951f * l) - (2.4285922050f * m) + (0.4505937099f * s);
+  derived.oklab.b = (0.0259040371f * l) + (0.7827717662f * m) - (0.8086757660f * s);
+
+  derived.oklch.l = derived.oklab.l;
+  derived.oklch.c = std::sqrt((derived.oklab.a * derived.oklab.a) + (derived.oklab.b * derived.oklab.b));
+  derived.oklch.h = OKLCH_ZERO_CHROMA_HUE_DEGREES;
+  if (derived.oklch.c > 0.0f) {
+    derived.oklch.h = std::atan2(derived.oklab.b, derived.oklab.a) * DEGREES_PER_RADIAN;
+    if (derived.oklch.h < 0.0f) {
+      derived.oklch.h += 360.0f;
+    }
+    if (derived.oklch.h >= 360.0f) {
+      derived.oklch.h -= 360.0f;
+    }
+  }
+
+  if (!std::isfinite(derived.oklab.l) || !std::isfinite(derived.oklab.a) || !std::isfinite(derived.oklab.b) ||
+      !std::isfinite(derived.oklch.l) || !std::isfinite(derived.oklch.c) || !std::isfinite(derived.oklch.h)) {
+    this->clear_derived_color_(DerivedColorStatus::FAILED);
+    return false;
+  }
+
+  this->derived_color_frame_ = derived;
+  this->derived_color_status_ = DerivedColorStatus::VALID;
+  ESP_LOGD(TAG, "AS7261 derived color stored: OKLab L=%f a=%f b=%f OKLCH L=%f C=%f h=%f",
+           this->derived_color_frame_.oklab.l, this->derived_color_frame_.oklab.a, this->derived_color_frame_.oklab.b,
+           this->derived_color_frame_.oklch.l, this->derived_color_frame_.oklch.c, this->derived_color_frame_.oklch.h);
+  return true;
+}
+
+bool AS7261Component::calibrated_xyz_valid_for_oklab_(const CalibratedFrame &frame) {
+  return std::isfinite(frame.x) && std::isfinite(frame.y) && std::isfinite(frame.z) && frame.x >= 0.0f &&
+         frame.y >= 0.0f && frame.z >= 0.0f && std::isfinite(OKLAB_REFERENCE_ILLUMINANCE_LX) &&
+         OKLAB_REFERENCE_ILLUMINANCE_LX > 0.0f;
 }
 
 void AS7261Component::clear_terminal_frame_state_() {
@@ -1287,6 +1370,25 @@ const char *AS7261Component::calibrated_frame_status_to_string_(CalibratedFrameS
     case CalibratedFrameStatus::OVERFLOW:
       return "overflow";
     case CalibratedFrameStatus::MALFORMED:
+      return "malformed";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::derived_color_status_to_string_(DerivedColorStatus status) {
+  switch (status) {
+    case DerivedColorStatus::INVALID:
+      return "invalid";
+    case DerivedColorStatus::VALID:
+      return "valid";
+    case DerivedColorStatus::FAILED:
+      return "failed";
+    case DerivedColorStatus::TIMEOUT:
+      return "timeout";
+    case DerivedColorStatus::OVERFLOW:
+      return "overflow";
+    case DerivedColorStatus::MALFORMED:
       return "malformed";
     default:
       return "unknown";
