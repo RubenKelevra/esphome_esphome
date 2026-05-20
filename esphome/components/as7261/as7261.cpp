@@ -69,7 +69,6 @@ void AS7261Component::update() {
   if (this->component_busy_()) {
     return;
   }
-
   if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
     if (!this->start_manual_exposure_commands_()) {
       ESP_LOGW(TAG, "Unable to start AS7261 manual exposure commands");
@@ -152,7 +151,8 @@ void AS7261Component::poll_command_sequence_() {
 }
 
 bool AS7261Component::start_command_sequence_(const CommandSequenceStep *steps, size_t step_count) {
-  if (steps == nullptr || step_count == 0 || step_count > COMMAND_SEQUENCE_LENGTH || this->component_busy_()) {
+  if (steps == nullptr || step_count == 0 || step_count > COMMAND_SEQUENCE_LENGTH || this->transport_busy_() ||
+      this->sequence_active_()) {
     return false;
   }
 
@@ -237,6 +237,9 @@ void AS7261Component::finish_command_sequence_(SequenceStatus status) {
       break;
     case SequenceOwner::FRAME_TRIGGER:
       this->handle_finished_frame_trigger_(status);
+      break;
+    case SequenceOwner::RAW_FRAME_READOUT:
+      this->handle_finished_raw_frame_readout_(status);
       break;
     case SequenceOwner::NONE:
       break;
@@ -330,6 +333,10 @@ void AS7261Component::handle_finished_diagnostic_readout_(SequenceStatus status)
 }
 
 bool AS7261Component::start_one_shot_frame_trigger_() {
+  if (this->frame_state_ == FrameState::TIMEOUT || this->frame_state_ == FrameState::ERROR) {
+    this->clear_terminal_frame_state_();
+  }
+
   if (this->component_busy_() || this->frame_state_ != FrameState::IDLE) {
     return false;
   }
@@ -365,6 +372,30 @@ void AS7261Component::handle_finished_frame_trigger_(SequenceStatus status) {
 }
 
 void AS7261Component::poll_frame_trigger_() {
+  if (this->frame_state_ == FrameState::READY) {
+    if (!this->start_raw_frame_readout_()) {
+      this->raw_frame_ = RawFrame{};
+      this->raw_frame_status_ = RawFrameStatus::FAILED;
+      this->clear_terminal_frame_state_();
+      ESP_LOGW(TAG, "Unable to start AS7261 raw frame readout");
+    }
+    return;
+  }
+
+  if (this->frame_state_ == FrameState::TIMEOUT) {
+    this->raw_frame_ = RawFrame{};
+    this->raw_frame_status_ = RawFrameStatus::TIMEOUT;
+    this->clear_terminal_frame_state_();
+    return;
+  }
+
+  if (this->frame_state_ == FrameState::ERROR) {
+    this->raw_frame_ = RawFrame{};
+    this->raw_frame_status_ = RawFrameStatus::FAILED;
+    this->clear_terminal_frame_state_();
+    return;
+  }
+
   if (this->frame_state_ != FrameState::WAITING_INT) {
     return;
   }
@@ -377,6 +408,64 @@ void AS7261Component::poll_frame_trigger_() {
     this->frame_state_ = FrameState::TIMEOUT;
     ESP_LOGW(TAG, "AS7261 one-shot frame timed out waiting for INT after %u ms",
              static_cast<unsigned>(this->frame_watchdog_timeout_ms_));
+  }
+}
+
+bool AS7261Component::start_raw_frame_readout_() {
+  if (this->transport_busy_() || this->sequence_active_() || this->frame_state_ != FrameState::READY) {
+    return false;
+  }
+
+  const CommandSequenceStep steps[] = {
+      {"ATDATA", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  this->raw_frame_ = RawFrame{};
+  this->frame_state_ = FrameState::READOUT_RUNNING;
+  this->raw_frame_status_ = RawFrameStatus::RUNNING;
+  this->sequence_owner_ = SequenceOwner::RAW_FRAME_READOUT;
+  if (this->start_command_sequence_(steps, 1)) {
+    return true;
+  }
+
+  this->sequence_owner_ = SequenceOwner::NONE;
+  this->raw_frame_status_ = RawFrameStatus::FAILED;
+  this->clear_terminal_frame_state_();
+  return false;
+}
+
+void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) {
+  if (status != SequenceStatus::COMPLETED) {
+    this->raw_frame_ = RawFrame{};
+    this->raw_frame_status_ = status == SequenceStatus::TIMEOUT    ? RawFrameStatus::TIMEOUT
+                              : status == SequenceStatus::OVERFLOW ? RawFrameStatus::OVERFLOW
+                                                                   : RawFrameStatus::FAILED;
+    this->clear_terminal_frame_state_();
+    ESP_LOGW(TAG, "AS7261 raw frame readout failed with %s", this->sequence_status_to_string_(status));
+    return;
+  }
+
+  RawFrame frame{};
+  if (!parse_raw_frame_(this->first_response_value_(), &frame)) {
+    this->raw_frame_ = RawFrame{};
+    this->raw_frame_status_ = RawFrameStatus::MALFORMED;
+    this->clear_terminal_frame_state_();
+    ESP_LOGW(TAG, "Unable to parse AS7261 raw frame response: %s", this->response_buffer_);
+    return;
+  }
+
+  this->raw_frame_ = frame;
+  this->raw_frame_status_ = RawFrameStatus::VALID;
+  this->clear_terminal_frame_state_();
+  ESP_LOGD(TAG, "AS7261 raw frame stored: X=%u Y=%u Z=%u NIR=%u Dark=%u Clear=%u",
+           static_cast<unsigned>(this->raw_frame_.x), static_cast<unsigned>(this->raw_frame_.y),
+           static_cast<unsigned>(this->raw_frame_.z), static_cast<unsigned>(this->raw_frame_.near_ir),
+           static_cast<unsigned>(this->raw_frame_.dark), static_cast<unsigned>(this->raw_frame_.clear));
+}
+
+void AS7261Component::clear_terminal_frame_state_() {
+  if (this->frame_state_ == FrameState::READY || this->frame_state_ == FrameState::READOUT_RUNNING ||
+      this->frame_state_ == FrameState::TIMEOUT || this->frame_state_ == FrameState::ERROR) {
+    this->frame_state_ = FrameState::IDLE;
   }
 }
 
@@ -406,6 +495,7 @@ void AS7261Component::handle_finished_diagnostic_command_(DiagnosticState state,
     this->handle_device_temperature_response_();
   }
 }
+
 void AS7261Component::handle_firmware_version_response_() {
 #ifdef USE_TEXT_SENSOR
   if (this->firmware_version_text_sensor_ == nullptr) {
@@ -690,6 +780,75 @@ bool AS7261Component::parse_unsigned_byte_(const char *text, uint8_t *value) {
   return true;
 }
 
+bool AS7261Component::parse_raw_frame_(const char *text, RawFrame *frame) {
+  if (text == nullptr || frame == nullptr) {
+    return false;
+  }
+
+  RawFrame parsed{};
+  const char *cursor = text;
+  if (!parse_raw_frame_field_(&cursor, &parsed.x, true) || !parse_raw_frame_field_(&cursor, &parsed.y, true) ||
+      !parse_raw_frame_field_(&cursor, &parsed.z, true) || !parse_raw_frame_field_(&cursor, &parsed.near_ir, true) ||
+      !parse_raw_frame_field_(&cursor, &parsed.dark, true) || !parse_raw_frame_field_(&cursor, &parsed.clear, false)) {
+    return false;
+  }
+
+  cursor = trim_left_(cursor);
+  if (*cursor != '\0' && *cursor != '\n') {
+    return false;
+  }
+
+  *frame = parsed;
+  return true;
+}
+
+bool AS7261Component::parse_raw_frame_field_(const char **cursor, uint16_t *value, bool expect_separator) {
+  if (cursor == nullptr || *cursor == nullptr || value == nullptr) {
+    return false;
+  }
+
+  const char *const begin = trim_left_(*cursor);
+  const char *end = begin;
+  while (*end != '\0' && *end != '\n' && *end != ',') {
+    end++;
+  }
+  const char *const value_end = trim_right_(begin, end);
+  if (!parse_unsigned_u16_(begin, value_end, value)) {
+    return false;
+  }
+
+  *cursor = end;
+  return expect_separator ? consume_raw_frame_separator_(cursor) : true;
+}
+
+bool AS7261Component::consume_raw_frame_separator_(const char **cursor) {
+  if (cursor == nullptr || *cursor == nullptr || **cursor != ',') {
+    return false;
+  }
+  *cursor += 1;
+  return true;
+}
+
+bool AS7261Component::parse_unsigned_u16_(const char *begin, const char *end, uint16_t *value) {
+  if (begin == nullptr || end == nullptr || value == nullptr || begin >= end) {
+    return false;
+  }
+
+  uint32_t parsed = 0;
+  for (const char *cursor = begin; cursor < end; cursor++) {
+    const int8_t digit = digit_value_(*cursor, 10);
+    if (digit < 0) {
+      return false;
+    }
+    parsed = (parsed * 10UL) + static_cast<uint8_t>(digit);
+    if (parsed > 0xFFFFUL) {
+      return false;
+    }
+  }
+  *value = static_cast<uint16_t>(parsed);
+  return true;
+}
+
 bool AS7261Component::parse_unsigned_digits_(const char *begin, const char *end, uint8_t base, uint16_t *value) {
   if (begin == nullptr || end == nullptr || value == nullptr || begin >= end) {
     return false;
@@ -827,10 +986,33 @@ const char *AS7261Component::frame_state_to_string_(FrameState state) {
       return "waiting_int";
     case FrameState::READY:
       return "ready";
+    case FrameState::READOUT_RUNNING:
+      return "readout_running";
     case FrameState::TIMEOUT:
       return "timeout";
     case FrameState::ERROR:
       return "error";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::raw_frame_status_to_string_(RawFrameStatus status) {
+  switch (status) {
+    case RawFrameStatus::INVALID:
+      return "invalid";
+    case RawFrameStatus::RUNNING:
+      return "running";
+    case RawFrameStatus::VALID:
+      return "valid";
+    case RawFrameStatus::FAILED:
+      return "failed";
+    case RawFrameStatus::TIMEOUT:
+      return "timeout";
+    case RawFrameStatus::OVERFLOW:
+      return "overflow";
+    case RawFrameStatus::MALFORMED:
+      return "malformed";
     default:
       return "unknown";
   }

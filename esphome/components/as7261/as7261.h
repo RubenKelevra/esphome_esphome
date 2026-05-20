@@ -110,6 +110,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     DIAGNOSTIC_READOUT,
     MANUAL_EXPOSURE,
     FRAME_TRIGGER,
+    RAW_FRAME_READOUT,
   };
 
   enum class FrameState : uint8_t {
@@ -117,8 +118,28 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     TRIGGER_RUNNING,
     WAITING_INT,
     READY,
+    READOUT_RUNNING,
     TIMEOUT,
     ERROR,
+  };
+
+  enum class RawFrameStatus : uint8_t {
+    INVALID,
+    RUNNING,
+    VALID,
+    FAILED,
+    TIMEOUT,
+    OVERFLOW,
+    MALFORMED,
+  };
+
+  struct RawFrame {
+    uint16_t x;
+    uint16_t y;
+    uint16_t z;
+    uint16_t near_ir;
+    uint16_t dark;
+    uint16_t clear;
   };
 
   struct CommandSequenceStep {
@@ -160,9 +181,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool start_diagnostic_readout_();
   bool start_manual_exposure_commands_();
   bool start_one_shot_frame_trigger_();
+  bool start_raw_frame_readout_();
   void poll_frame_trigger_();
   void handle_finished_diagnostic_readout_(SequenceStatus status);
   void handle_finished_frame_trigger_(SequenceStatus status);
+  void clear_terminal_frame_state_();
+  void handle_finished_raw_frame_readout_(SequenceStatus status);
   bool frame_int_ready_() const;
   uint32_t calculate_frame_watchdog_timeout_ms_() const;
   void handle_finished_manual_exposure_commands_(SequenceStatus status);
@@ -181,6 +205,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void release_reset_pulse_();
   static bool parse_device_temperature_(const char *text, int16_t *temperature_c, bool *invalid);
   static bool parse_unsigned_byte_(const char *text, uint8_t *value);
+  static bool parse_raw_frame_(const char *text, RawFrame *frame);
+  static bool parse_raw_frame_field_(const char **cursor, uint16_t *value, bool expect_separator);
+  static bool consume_raw_frame_separator_(const char **cursor);
+  static bool parse_unsigned_u16_(const char *begin, const char *end, uint16_t *value);
   static bool parse_unsigned_digits_(const char *begin, const char *end, uint8_t base, uint16_t *value);
   static const char *trim_left_(const char *text);
   static const char *trim_right_(const char *begin, const char *end);
@@ -190,6 +218,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *diagnostic_state_to_string_(DiagnosticState state);
   static const char *sequence_status_to_string_(SequenceStatus status);
   static const char *frame_state_to_string_(FrameState state);
+  static const char *raw_frame_status_to_string_(RawFrameStatus status);
   static uint8_t gain_to_at_value_(AS7261Gain gain);
 
   InternalGPIOPin *int_pin_{nullptr};
@@ -216,6 +245,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   uint32_t frame_wait_started_millis_{0};
   uint32_t frame_watchdog_timeout_ms_{0};
   uint8_t response_line_count_{0};
+  RawFrame raw_frame_{};
+  RawFrameStatus raw_frame_status_{RawFrameStatus::INVALID};
   int16_t last_device_temperature_c_{0};
   bool device_temperature_valid_{false};
   bool device_temperature_invalid_{false};
