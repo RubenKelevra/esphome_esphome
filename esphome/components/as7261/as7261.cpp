@@ -72,12 +72,14 @@ void AS7261Component::update() {
   if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
     if (!this->start_manual_exposure_commands_()) {
       ESP_LOGW(TAG, "Unable to start AS7261 manual exposure commands");
+      this->publish_nan_default_measurement_outputs_();
     }
     return;
   }
 
   if (!this->start_diagnostic_readout_()) {
     ESP_LOGW(TAG, "Unable to start AS7261 diagnostic readout");
+    this->publish_nan_default_measurement_outputs_();
   }
 }
 
@@ -292,6 +294,7 @@ void AS7261Component::handle_finished_manual_exposure_commands_(SequenceStatus s
     return;
   }
   this->manual_exposure_state_ = ManualExposureCommandState::FAILED;
+  this->publish_nan_default_measurement_outputs_();
   ESP_LOGW(TAG, "AS7261 manual exposure commands failed with %s", this->sequence_status_to_string_(status));
 }
 
@@ -324,19 +327,28 @@ bool AS7261Component::start_diagnostic_readout_() {
 void AS7261Component::handle_finished_diagnostic_readout_(SequenceStatus status) {
   if (status != SequenceStatus::COMPLETED) {
     ESP_LOGW(TAG, "AS7261 diagnostic readout failed with %s", this->sequence_status_to_string_(status));
+    this->publish_nan_default_measurement_outputs_();
     return;
   }
   if (this->manual_exposure_ && this->manual_exposure_state_ != ManualExposureCommandState::APPLIED) {
     ESP_LOGW(TAG, "Skipping AS7261 one-shot trigger because manual exposure is not applied");
+    this->publish_nan_default_measurement_outputs_();
+    return;
+  }
+  if (!this->device_temperature_valid_ || this->device_temperature_invalid_) {
+    ESP_LOGW(TAG, "Skipping AS7261 one-shot trigger because device temperature is invalid");
+    this->publish_nan_default_measurement_outputs_();
     return;
   }
   if (this->device_temperature_unsafe_) {
     ESP_LOGW(TAG, "Skipping AS7261 one-shot trigger while device temperature is unsafe");
+    this->publish_nan_default_measurement_outputs_();
     return;
   }
   if (!this->start_one_shot_frame_trigger_()) {
     ESP_LOGW(TAG, "Unable to start AS7261 one-shot frame trigger");
     this->frame_state_ = FrameState::ERROR;
+    this->publish_nan_default_measurement_outputs_();
   }
 }
 
@@ -364,11 +376,13 @@ bool AS7261Component::start_one_shot_frame_trigger_() {
 void AS7261Component::handle_finished_frame_trigger_(SequenceStatus status) {
   if (status != SequenceStatus::COMPLETED) {
     this->frame_state_ = FrameState::ERROR;
+    this->publish_nan_default_measurement_outputs_();
     ESP_LOGW(TAG, "AS7261 one-shot trigger failed with %s", this->sequence_status_to_string_(status));
     return;
   }
   if (this->int_pin_ == nullptr) {
     this->frame_state_ = FrameState::ERROR;
+    this->publish_nan_default_measurement_outputs_();
     ESP_LOGE(TAG, "AS7261 INT pin is not configured; cannot wait for frame completion");
     return;
   }
@@ -388,6 +402,7 @@ void AS7261Component::poll_frame_trigger_() {
       this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
       this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
       this->clear_derived_color_(DerivedColorStatus::FAILED);
+      this->publish_nan_default_measurement_outputs_();
       this->clear_terminal_frame_state_();
       ESP_LOGW(TAG, "Unable to start AS7261 raw frame readout");
     }
@@ -401,6 +416,7 @@ void AS7261Component::poll_frame_trigger_() {
     this->calibrated_frame_status_ = CalibratedFrameStatus::TIMEOUT;
     this->clear_calculated_duv_(CalculatedDuvStatus::TIMEOUT);
     this->clear_derived_color_(DerivedColorStatus::TIMEOUT);
+    this->publish_nan_default_measurement_outputs_();
     this->clear_terminal_frame_state_();
     return;
   }
@@ -412,6 +428,7 @@ void AS7261Component::poll_frame_trigger_() {
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
     this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
     this->clear_derived_color_(DerivedColorStatus::FAILED);
+    this->publish_nan_default_measurement_outputs_();
     this->clear_terminal_frame_state_();
     return;
   }
@@ -475,6 +492,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->clear_derived_color_(status == SequenceStatus::TIMEOUT    ? DerivedColorStatus::TIMEOUT
                                : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
                                                                     : DerivedColorStatus::FAILED);
+    this->publish_nan_default_measurement_outputs_();
     this->clear_terminal_frame_state_();
     ESP_LOGW(TAG, "AS7261 raw frame readout failed with %s", this->sequence_status_to_string_(status));
     return;
@@ -488,6 +506,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
     this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
     this->clear_derived_color_(DerivedColorStatus::MALFORMED);
+    this->publish_nan_default_measurement_outputs_();
     this->clear_terminal_frame_state_();
     ESP_LOGW(TAG, "Unable to parse AS7261 raw frame response: %s", this->response_buffer_);
     return;
@@ -505,6 +524,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
     this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
     this->clear_derived_color_(DerivedColorStatus::FAILED);
+    this->publish_nan_default_measurement_outputs_();
     ESP_LOGW(TAG, "Unable to start AS7261 calibrated frame readout");
   }
 }
@@ -598,6 +618,7 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
                                  : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
                                                                       : DerivedColorStatus::FAILED);
     }
+    this->publish_nan_default_measurement_outputs_();
     ESP_LOGW(TAG, "AS7261 calibrated frame readout failed with %s",
              this->calibrated_frame_status_to_string_(this->calibrated_frame_status_));
     return;
@@ -615,6 +636,7 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
     ESP_LOGW(TAG, "AS7261 OKLab/OKLCH derivation failed with %s",
              this->derived_color_status_to_string_(this->derived_color_status_));
   }
+  this->publish_default_measurement_outputs_();
 }
 
 void AS7261Component::clear_calculated_duv_(CalculatedDuvStatus status) {
@@ -734,6 +756,94 @@ bool AS7261Component::planckian_locus_uv_from_cct_(float cct, Cie1960UcsPoint *p
 void AS7261Component::clear_derived_color_(DerivedColorStatus status) {
   this->derived_color_frame_ = DerivedColorFrame{};
   this->derived_color_status_ = status;
+}
+
+bool AS7261Component::default_measurement_outputs_publishable_() const {
+  return this->raw_frame_status_ == RawFrameStatus::VALID &&
+         this->calibrated_frame_status_ == CalibratedFrameStatus::VALID &&
+         this->calculated_duv_status_ == CalculatedDuvStatus::VALID &&
+         this->derived_color_status_ == DerivedColorStatus::VALID && this->device_temperature_valid_ &&
+         !this->device_temperature_invalid_ && !this->device_temperature_unsafe_ &&
+         std::isfinite(this->calibrated_frame_.cct) && std::isfinite(this->calibrated_frame_.lux) &&
+         std::isfinite(this->calculated_duv_frame_.duv) && std::isfinite(this->derived_color_frame_.oklab.l) &&
+         std::isfinite(this->derived_color_frame_.oklab.a) && std::isfinite(this->derived_color_frame_.oklab.b) &&
+         std::isfinite(this->derived_color_frame_.oklch.l) && std::isfinite(this->derived_color_frame_.oklch.c) &&
+         std::isfinite(this->derived_color_frame_.oklch.h);
+}
+
+void AS7261Component::publish_default_measurement_outputs_() {
+#ifdef USE_SENSOR
+  if (!this->default_measurement_outputs_publishable_()) {
+    this->publish_nan_default_measurement_outputs_();
+    return;
+  }
+  if (this->cct_sensor_ != nullptr) {
+    this->cct_sensor_->publish_state(std::isfinite(this->calibrated_frame_.cct) ? this->calibrated_frame_.cct : NAN);
+  }
+  if (this->calculated_duv_sensor_ != nullptr) {
+    this->calculated_duv_sensor_->publish_state(
+        std::isfinite(this->calculated_duv_frame_.duv) ? this->calculated_duv_frame_.duv : NAN);
+  }
+  if (this->lux_sensor_ != nullptr) {
+    this->lux_sensor_->publish_state(std::isfinite(this->calibrated_frame_.lux) ? this->calibrated_frame_.lux : NAN);
+  }
+  if (this->oklab_l_sensor_ != nullptr) {
+    this->oklab_l_sensor_->publish_state(
+        std::isfinite(this->derived_color_frame_.oklab.l) ? this->derived_color_frame_.oklab.l : NAN);
+  }
+  if (this->oklab_a_sensor_ != nullptr) {
+    this->oklab_a_sensor_->publish_state(
+        std::isfinite(this->derived_color_frame_.oklab.a) ? this->derived_color_frame_.oklab.a : NAN);
+  }
+  if (this->oklab_b_sensor_ != nullptr) {
+    this->oklab_b_sensor_->publish_state(
+        std::isfinite(this->derived_color_frame_.oklab.b) ? this->derived_color_frame_.oklab.b : NAN);
+  }
+  if (this->oklch_l_sensor_ != nullptr) {
+    this->oklch_l_sensor_->publish_state(
+        std::isfinite(this->derived_color_frame_.oklch.l) ? this->derived_color_frame_.oklch.l : NAN);
+  }
+  if (this->oklch_c_sensor_ != nullptr) {
+    this->oklch_c_sensor_->publish_state(
+        std::isfinite(this->derived_color_frame_.oklch.c) ? this->derived_color_frame_.oklch.c : NAN);
+  }
+  if (this->oklch_h_sensor_ != nullptr) {
+    this->oklch_h_sensor_->publish_state(
+        std::isfinite(this->derived_color_frame_.oklch.h) ? this->derived_color_frame_.oklch.h : NAN);
+  }
+#endif
+}
+
+void AS7261Component::publish_nan_default_measurement_outputs_() {
+#ifdef USE_SENSOR
+  if (this->cct_sensor_ != nullptr) {
+    this->cct_sensor_->publish_state(NAN);
+  }
+  if (this->calculated_duv_sensor_ != nullptr) {
+    this->calculated_duv_sensor_->publish_state(NAN);
+  }
+  if (this->lux_sensor_ != nullptr) {
+    this->lux_sensor_->publish_state(NAN);
+  }
+  if (this->oklab_l_sensor_ != nullptr) {
+    this->oklab_l_sensor_->publish_state(NAN);
+  }
+  if (this->oklab_a_sensor_ != nullptr) {
+    this->oklab_a_sensor_->publish_state(NAN);
+  }
+  if (this->oklab_b_sensor_ != nullptr) {
+    this->oklab_b_sensor_->publish_state(NAN);
+  }
+  if (this->oklch_l_sensor_ != nullptr) {
+    this->oklch_l_sensor_->publish_state(NAN);
+  }
+  if (this->oklch_c_sensor_ != nullptr) {
+    this->oklch_c_sensor_->publish_state(NAN);
+  }
+  if (this->oklch_h_sensor_ != nullptr) {
+    this->oklch_h_sensor_->publish_state(NAN);
+  }
+#endif
 }
 
 bool AS7261Component::derive_oklab_oklch_() {

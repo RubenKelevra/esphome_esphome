@@ -265,6 +265,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void handle_finished_calibrated_frame_readout_(SequenceStatus status);
   void clear_calculated_duv_(CalculatedDuvStatus status);
   void clear_derived_color_(DerivedColorStatus status);
+  bool default_measurement_outputs_publishable_() const;
+  void publish_default_measurement_outputs_();
+  void publish_nan_default_measurement_outputs_();
   bool derive_calculated_duv_();
   bool derive_oklab_oklch_();
   static bool calibrated_frame_valid_for_duv_(const CalibratedFrame &frame);
