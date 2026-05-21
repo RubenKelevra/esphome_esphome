@@ -11,6 +11,12 @@ as7261:
     inverted: true
   update_interval: 30s
 
+button:
+  - platform: as7261
+    id: as7261_sensor
+    measure:
+      name: AS7261 Measure
+
 sensor:
   - platform: as7261
     as7261_id: as7261_sensor

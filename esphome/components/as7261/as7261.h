@@ -5,6 +5,10 @@
 #include "esphome/core/hal.h"
 #include "esphome/components/uart/uart.h"
 
+#ifdef USE_BUTTON
+#include "esphome/components/button/button.h"
+#endif
+
 #ifdef USE_SENSOR
 #include "esphome/components/sensor/sensor.h"
 #endif
@@ -59,6 +63,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void dump_config() override;
   void loop() override;
   void update() override;
+  void request_manual_measurement();
 
   void set_int_pin(InternalGPIOPin *int_pin) { this->int_pin_ = int_pin; }
   void set_reset_pin(GPIOPin *reset_pin) { this->reset_pin_ = reset_pin; }
@@ -287,6 +292,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool start_one_shot_frame_trigger_();
   bool start_raw_frame_readout_();
   bool start_calibrated_frame_readout_();
+  bool start_measurement_cycle_();
   void poll_frame_trigger_();
   void handle_finished_diagnostic_readout_(SequenceStatus status);
   void handle_finished_frame_trigger_(SequenceStatus status);
@@ -394,5 +400,15 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   AS7261Gain gain_{AS7261_GAIN_16X};
   uint8_t integration_time_{0};
 };
+
+#ifdef USE_BUTTON
+class AS7261MeasureButton : public button::Button, public Parented<AS7261Component> {
+ public:
+  AS7261MeasureButton() = default;
+
+ protected:
+  void press_action() override;
+};
+#endif
 
 }  // namespace esphome::as7261

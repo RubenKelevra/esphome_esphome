@@ -69,19 +69,30 @@ void AS7261Component::update() {
   if (this->component_busy_()) {
     return;
   }
-  this->clear_exposure_assessment_();
-  if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
-    if (!this->start_manual_exposure_commands_()) {
-      ESP_LOGW(TAG, "Unable to start AS7261 manual exposure commands");
-      this->publish_nan_default_measurement_outputs_();
-    }
-    return;
-  }
-
-  if (!this->start_diagnostic_readout_()) {
-    ESP_LOGW(TAG, "Unable to start AS7261 diagnostic readout");
+  if (!this->start_measurement_cycle_()) {
+    ESP_LOGW(TAG, "Unable to start AS7261 polling measurement");
     this->publish_nan_default_measurement_outputs_();
   }
+}
+
+void AS7261Component::request_manual_measurement() {
+  if (this->component_busy_()) {
+    ESP_LOGW(TAG, "Dropping AS7261 manual measurement request because the component is busy");
+    return;
+  }
+  if (!this->start_measurement_cycle_()) {
+    ESP_LOGW(TAG, "Unable to start AS7261 manual measurement");
+    this->publish_nan_default_measurement_outputs_();
+  }
+}
+
+bool AS7261Component::start_measurement_cycle_() {
+  this->clear_exposure_assessment_();
+  if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
+    return this->start_manual_exposure_commands_();
+  }
+
+  return this->start_diagnostic_readout_();
 }
 
 bool AS7261Component::begin_at_command_(const char *command, uint32_t timeout_ms) {
@@ -292,6 +303,10 @@ void AS7261Component::handle_finished_manual_exposure_commands_(SequenceStatus s
   if (status == SequenceStatus::COMPLETED) {
     this->manual_exposure_state_ = ManualExposureCommandState::APPLIED;
     ESP_LOGD(TAG, "AS7261 manual exposure applied");
+    if (!this->start_diagnostic_readout_()) {
+      ESP_LOGW(TAG, "Unable to resume AS7261 measurement after manual exposure");
+      this->publish_nan_default_measurement_outputs_();
+    }
     return;
   }
   this->manual_exposure_state_ = ManualExposureCommandState::FAILED;
@@ -1778,5 +1793,9 @@ const char *AS7261Component::gain_to_string_() const {
       return "unknown";
   }
 }
+
+#ifdef USE_BUTTON
+void AS7261MeasureButton::press_action() { this->parent_->request_manual_measurement(); }
+#endif
 
 }  // namespace esphome::as7261

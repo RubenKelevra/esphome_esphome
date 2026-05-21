@@ -13,6 +13,12 @@ as7261:
   integration_time: 50
   update_interval: 30s
 
+button:
+  - platform: as7261
+    id: as7261_manual
+    measure:
+      name: AS7261 Manual Measure
+
 sensor:
   - platform: as7261
     as7261_id: as7261_manual

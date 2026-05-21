@@ -1,0 +1,40 @@
+as7261:
+  id: as7261_manual_only
+  int_pin:
+    number: GPIO4
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  reset_pin:
+    number: GPIO5
+    inverted: true
+  update_interval: never
+
+button:
+  - platform: as7261
+    id: as7261_manual_only
+    measure:
+      name: AS7261 Manual Only Measure
+
+sensor:
+  - platform: as7261
+    as7261_id: as7261_manual_only
+    cct:
+      name: AS7261 Manual Only CCT
+    calculated_duv:
+      name: AS7261 Manual Only Duv
+    lux:
+      name: AS7261 Manual Only Lux
+    oklab_l:
+      name: AS7261 Manual Only OKLab L
+    oklab_a:
+      name: AS7261 Manual Only OKLab a
+    oklab_b:
+      name: AS7261 Manual Only OKLab b
+    oklch_l:
+      name: AS7261 Manual Only OKLCH L
+    oklch_c:
+      name: AS7261 Manual Only OKLCH C
+    oklch_h:
+      name: AS7261 Manual Only OKLCH h

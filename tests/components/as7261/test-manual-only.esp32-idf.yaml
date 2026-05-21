@@ -1,0 +1,15 @@
+esphome:
+  name: as7261-manual-only-test
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+uart:
+  id: uart_bus
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 115200
+
+<<: !include manual_only.yaml

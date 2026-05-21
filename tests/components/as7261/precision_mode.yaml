@@ -12,6 +12,12 @@ as7261:
   precision_mode: true
   update_interval: 60s
 
+button:
+  - platform: as7261
+    id: as7261_precision
+    measure:
+      name: AS7261 Precision Measure
+
 sensor:
   - platform: as7261
     as7261_id: as7261_precision
