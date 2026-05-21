@@ -171,6 +171,13 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     MALFORMED,
   };
 
+  enum class AutoExposureConvergenceState : uint8_t {
+    IDLE,
+    APPLYING_CANDIDATE,
+    PROBING,
+    FAILED,
+  };
+
   enum class CalibratedFrameStatus : uint8_t {
     INVALID,
     RUNNING,
@@ -340,6 +347,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
       (CLEAR_TARGET_LOW_PERCENT + CLEAR_NEAR_SATURATION_PERCENT) / 2.0f;
   static constexpr float AUTO_EXPOSURE_JUMP_INCREASE_MULTIPLIER = 8.0f;
   static constexpr uint8_t AUTO_EXPOSURE_GAIN_STEP_COUNT = 3;
+  // Fixed private bound: initial fallback probe plus four correction probes. This keeps auto mode finite
+  // without exposing retry tuning through the public YAML contract.
+  static constexpr uint8_t AUTO_EXPOSURE_CONVERGENCE_ATTEMPT_LIMIT = 5;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
@@ -387,7 +397,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void clear_derived_color_(DerivedColorStatus status);
   void clear_exposure_assessment_();
   bool assess_clear_channel_exposure_();
+  bool assess_clear_channel_exposure_(const RawFrame &frame, bool frame_valid);
   void clear_auto_exposure_policy_();
+  bool start_auto_exposure_convergence_();
+  bool start_auto_exposure_probe_attempt_();
+  void handle_finished_auto_exposure_probe_();
+  void fail_auto_exposure_convergence_();
   void initialize_auto_exposure_policy_();
   bool update_auto_exposure_policy_();
   bool auto_exposure_candidate_applied_() const;
@@ -469,6 +484,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   SequenceStatus sequence_status_{SequenceStatus::IDLE};
   ManualExposureCommandState manual_exposure_state_{ManualExposureCommandState::NOT_CONFIGURED};
   AutoExposureCommandState auto_exposure_state_{AutoExposureCommandState::NOT_CONFIGURED};
+  AutoExposureConvergenceState auto_exposure_convergence_state_{AutoExposureConvergenceState::IDLE};
+  uint8_t auto_exposure_convergence_attempts_{0};
   SequenceOwner sequence_owner_{SequenceOwner::NONE};
   FrameState frame_state_{FrameState::IDLE};
   SingleBankProbeState single_bank_probe_state_{SingleBankProbeState::IDLE};

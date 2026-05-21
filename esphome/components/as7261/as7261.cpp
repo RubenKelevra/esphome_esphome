@@ -105,8 +105,8 @@ bool AS7261Component::start_measurement_cycle_() {
   if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
     return this->start_manual_exposure_commands_();
   }
-  if (!this->manual_exposure_ && !this->auto_exposure_candidate_applied_()) {
-    return this->start_auto_exposure_candidate_commands_();
+  if (!this->manual_exposure_) {
+    return this->start_auto_exposure_convergence_();
   }
 
   return this->start_diagnostic_readout_();
@@ -344,7 +344,8 @@ void AS7261Component::handle_finished_manual_exposure_commands_(SequenceStatus s
 }
 
 bool AS7261Component::start_auto_exposure_candidate_commands_() {
-  if (this->manual_exposure_ || this->component_busy_()) {
+  if (this->manual_exposure_ || this->transport_busy_() || this->sequence_active_() ||
+      this->single_bank_probe_active_() || this->frame_state_ != FrameState::IDLE) {
     return false;
   }
 
@@ -358,6 +359,9 @@ bool AS7261Component::start_auto_exposure_candidate_commands_() {
   policy.current_candidate = normalize_auto_exposure_candidate_(policy.current_candidate);
   if (this->auto_exposure_candidate_applied_()) {
     this->auto_exposure_state_ = AutoExposureCommandState::APPLIED;
+    if (this->auto_exposure_convergence_state_ != AutoExposureConvergenceState::IDLE) {
+      return this->start_auto_exposure_probe_attempt_();
+    }
     return this->start_diagnostic_readout_();
   }
 
@@ -401,6 +405,10 @@ void AS7261Component::handle_finished_auto_exposure_candidate_commands_(Sequence
     ESP_LOGD(TAG, "AS7261 auto exposure candidate applied: gain %u int %u",
              static_cast<unsigned>(gain_to_at_value_(policy.applied_candidate.gain)),
              static_cast<unsigned>(policy.applied_candidate.integration_time));
+    if (this->auto_exposure_convergence_state_ != AutoExposureConvergenceState::IDLE) {
+      this->start_auto_exposure_probe_attempt_();
+      return;
+    }
     if (!this->start_diagnostic_readout_()) {
       ESP_LOGW(TAG, "Unable to resume AS7261 measurement after auto exposure candidate application");
       this->publish_nan_default_measurement_outputs_();
@@ -410,7 +418,11 @@ void AS7261Component::handle_finished_auto_exposure_candidate_commands_(Sequence
 
   this->auto_exposure_state_ = AutoExposureCommandState::FAILED;
   policy.candidate_applied = false;
-  this->publish_nan_default_measurement_outputs_();
+  if (this->auto_exposure_convergence_state_ != AutoExposureConvergenceState::IDLE) {
+    this->fail_auto_exposure_convergence_();
+  } else {
+    this->publish_nan_default_measurement_outputs_();
+  }
   ESP_LOGW(TAG, "AS7261 auto exposure candidate commands failed with %s", this->sequence_status_to_string_(status));
 }
 
@@ -614,6 +626,9 @@ void AS7261Component::handle_finished_single_bank_probe_configure_(SequenceStatu
                                           : status == SequenceStatus::OVERFLOW ? SingleBankProbeStatus::OVERFLOW
                                                                                : SingleBankProbeStatus::FAILED);
     ESP_LOGW(TAG, "AS7261 single-bank probe configuration failed with %s", this->sequence_status_to_string_(status));
+    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+      this->fail_auto_exposure_convergence_();
+    }
     return;
   }
 
@@ -634,6 +649,9 @@ void AS7261Component::poll_single_bank_probe_() {
     if (!this->start_single_bank_probe_stop_()) {
       this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
       ESP_LOGW(TAG, "Unable to stop AS7261 single-bank probe burst after INT");
+      if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+        this->fail_auto_exposure_convergence_();
+      }
     }
     return;
   }
@@ -645,6 +663,9 @@ void AS7261Component::poll_single_bank_probe_() {
              static_cast<unsigned>(this->single_bank_probe_watchdog_timeout_ms_));
     if (!this->start_single_bank_probe_stop_()) {
       this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
+      if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+        this->fail_auto_exposure_convergence_();
+      }
     }
   }
 }
@@ -677,6 +698,9 @@ void AS7261Component::handle_finished_single_bank_probe_stop_(SequenceStatus sta
     this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
     ESP_LOGW(TAG, "AS7261 single-bank probe burst stopped after INT timeout with %s",
              this->sequence_status_to_string_(status));
+    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+      this->fail_auto_exposure_convergence_();
+    }
     return;
   }
 
@@ -685,12 +709,18 @@ void AS7261Component::handle_finished_single_bank_probe_stop_(SequenceStatus sta
                                           : status == SequenceStatus::OVERFLOW ? SingleBankProbeStatus::OVERFLOW
                                                                                : SingleBankProbeStatus::FAILED);
     ESP_LOGW(TAG, "AS7261 single-bank probe burst stop failed with %s", this->sequence_status_to_string_(status));
+    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+      this->fail_auto_exposure_convergence_();
+    }
     return;
   }
 
   if (!this->start_single_bank_probe_raw_readout_()) {
     this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
     ESP_LOGW(TAG, "Unable to start AS7261 single-bank probe raw readout after burst stop");
+    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+      this->fail_auto_exposure_convergence_();
+    }
   }
 }
 
@@ -722,6 +752,9 @@ void AS7261Component::handle_finished_single_bank_probe_raw_readout_(SequenceSta
                                           : status == SequenceStatus::OVERFLOW ? SingleBankProbeStatus::OVERFLOW
                                                                                : SingleBankProbeStatus::FAILED);
     ESP_LOGW(TAG, "AS7261 single-bank probe raw readout failed with %s", this->sequence_status_to_string_(status));
+    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+      this->fail_auto_exposure_convergence_();
+    }
     return;
   }
 
@@ -729,6 +762,9 @@ void AS7261Component::handle_finished_single_bank_probe_raw_readout_(SequenceSta
   if (!parse_raw_frame_(this->first_response_value_(), &frame)) {
     this->clear_single_bank_probe_result_(SingleBankProbeStatus::MALFORMED);
     ESP_LOGW(TAG, "Unable to parse AS7261 single-bank probe raw response: %s", this->response_buffer_);
+    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+      this->fail_auto_exposure_convergence_();
+    }
     return;
   }
 
@@ -742,6 +778,9 @@ void AS7261Component::handle_finished_single_bank_probe_raw_readout_(SequenceSta
            static_cast<unsigned>(this->single_bank_probe_raw_frame_.near_ir),
            static_cast<unsigned>(this->single_bank_probe_raw_frame_.dark),
            static_cast<unsigned>(this->single_bank_probe_raw_frame_.clear));
+  if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+    this->handle_finished_auto_exposure_probe_();
+  }
 }
 
 void AS7261Component::clear_single_bank_probe_result_(SingleBankProbeStatus status) {
@@ -843,13 +882,17 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
 void AS7261Component::clear_exposure_assessment_() { this->exposure_assessment_ = ExposureAssessment{}; }
 
 bool AS7261Component::assess_clear_channel_exposure_() {
-  if (this->raw_frame_status_ != RawFrameStatus::VALID) {
+  return this->assess_clear_channel_exposure_(this->raw_frame_, this->raw_frame_status_ == RawFrameStatus::VALID);
+}
+
+bool AS7261Component::assess_clear_channel_exposure_(const RawFrame &frame, bool frame_valid) {
+  if (!frame_valid) {
     this->clear_exposure_assessment_();
     return false;
   }
 
   ExposureAssessment assessment{};
-  assessment.clear_percent = (CLEAR_PERCENT_SCALE * static_cast<float>(this->raw_frame_.clear)) / RAW_CLEAR_FULL_SCALE;
+  assessment.clear_percent = (CLEAR_PERCENT_SCALE * static_cast<float>(frame.clear)) / RAW_CLEAR_FULL_SCALE;
   if (!std::isfinite(assessment.clear_percent)) {
     this->clear_exposure_assessment_();
     return false;
@@ -883,6 +926,91 @@ bool AS7261Component::assess_clear_channel_exposure_() {
 void AS7261Component::clear_auto_exposure_policy_() {
   this->auto_exposure_policy_ = AutoExposurePolicy{};
   this->auto_exposure_state_ = AutoExposureCommandState::NOT_CONFIGURED;
+  this->auto_exposure_convergence_state_ = AutoExposureConvergenceState::IDLE;
+  this->auto_exposure_convergence_attempts_ = 0;
+}
+
+bool AS7261Component::start_auto_exposure_convergence_() {
+  if (this->manual_exposure_ || this->transport_busy_() || this->sequence_active_() ||
+      this->single_bank_probe_active_() || this->frame_state_ != FrameState::IDLE) {
+    return false;
+  }
+
+  this->initialize_auto_exposure_policy_();
+  AutoExposurePolicy &policy = this->auto_exposure_policy_;
+  if (!policy.candidate_initialized) {
+    this->fail_auto_exposure_convergence_();
+    return false;
+  }
+
+  this->clear_exposure_assessment_();
+  this->auto_exposure_convergence_attempts_ = 0;
+  this->auto_exposure_convergence_state_ = AutoExposureConvergenceState::APPLYING_CANDIDATE;
+  if (this->start_auto_exposure_candidate_commands_()) {
+    return true;
+  }
+  this->fail_auto_exposure_convergence_();
+  return false;
+}
+
+bool AS7261Component::start_auto_exposure_probe_attempt_() {
+  if (this->manual_exposure_ || this->auto_exposure_convergence_attempts_ >= AUTO_EXPOSURE_CONVERGENCE_ATTEMPT_LIMIT) {
+    this->fail_auto_exposure_convergence_();
+    return false;
+  }
+
+  this->auto_exposure_convergence_attempts_++;
+  this->auto_exposure_convergence_state_ = AutoExposureConvergenceState::PROBING;
+  if (this->start_single_bank_probe_()) {
+    return true;
+  }
+  this->fail_auto_exposure_convergence_();
+  return false;
+}
+
+void AS7261Component::handle_finished_auto_exposure_probe_() {
+  if (this->manual_exposure_ || this->single_bank_probe_status_ != SingleBankProbeStatus::VALID ||
+      !this->assess_clear_channel_exposure_(this->single_bank_probe_raw_frame_, true) ||
+      !this->update_auto_exposure_policy_()) {
+    this->fail_auto_exposure_convergence_();
+    return;
+  }
+
+  AutoExposurePolicy &policy = this->auto_exposure_policy_;
+  if (policy.accepted) {
+    this->auto_exposure_convergence_state_ = AutoExposureConvergenceState::IDLE;
+    this->auto_exposure_convergence_attempts_ = 0;
+    if (!this->start_diagnostic_readout_()) {
+      ESP_LOGW(TAG, "Unable to resume AS7261 measurement after auto exposure convergence");
+      this->publish_nan_default_measurement_outputs_();
+    }
+    return;
+  }
+
+  if (policy.dark_channel_recovery_required ||
+      auto_exposure_candidates_equal_(policy.current_candidate, policy.next_candidate) ||
+      this->auto_exposure_convergence_attempts_ >= AUTO_EXPOSURE_CONVERGENCE_ATTEMPT_LIMIT) {
+    this->fail_auto_exposure_convergence_();
+    return;
+  }
+
+  policy.current_candidate = normalize_auto_exposure_candidate_(policy.next_candidate);
+  policy.candidate_applied = false;
+  this->auto_exposure_state_ = AutoExposureCommandState::PENDING;
+  this->auto_exposure_convergence_state_ = AutoExposureConvergenceState::APPLYING_CANDIDATE;
+  if (!this->start_auto_exposure_candidate_commands_()) {
+    this->fail_auto_exposure_convergence_();
+  }
+}
+
+void AS7261Component::fail_auto_exposure_convergence_() {
+  this->auto_exposure_convergence_state_ = AutoExposureConvergenceState::FAILED;
+  this->auto_exposure_state_ = AutoExposureCommandState::FAILED;
+  this->auto_exposure_policy_.accepted = false;
+  this->clear_exposure_assessment_();
+  this->publish_nan_default_measurement_outputs_();
+  this->auto_exposure_convergence_state_ = AutoExposureConvergenceState::IDLE;
+  this->auto_exposure_convergence_attempts_ = 0;
 }
 
 void AS7261Component::initialize_auto_exposure_policy_() {
