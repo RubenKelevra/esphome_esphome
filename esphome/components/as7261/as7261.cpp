@@ -69,6 +69,7 @@ void AS7261Component::update() {
   if (this->component_busy_()) {
     return;
   }
+  this->clear_exposure_assessment_();
   if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
     if (!this->start_manual_exposure_commands_()) {
       ESP_LOGW(TAG, "Unable to start AS7261 manual exposure commands");
@@ -398,6 +399,7 @@ void AS7261Component::poll_frame_trigger_() {
     if (!this->start_raw_frame_readout_()) {
       this->raw_frame_ = RawFrame{};
       this->raw_frame_status_ = RawFrameStatus::FAILED;
+      this->clear_exposure_assessment_();
       this->calibrated_frame_ = CalibratedFrame{};
       this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
       this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
@@ -412,6 +414,7 @@ void AS7261Component::poll_frame_trigger_() {
   if (this->frame_state_ == FrameState::TIMEOUT) {
     this->raw_frame_ = RawFrame{};
     this->raw_frame_status_ = RawFrameStatus::TIMEOUT;
+    this->clear_exposure_assessment_();
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::TIMEOUT;
     this->clear_calculated_duv_(CalculatedDuvStatus::TIMEOUT);
@@ -424,6 +427,7 @@ void AS7261Component::poll_frame_trigger_() {
   if (this->frame_state_ == FrameState::ERROR) {
     this->raw_frame_ = RawFrame{};
     this->raw_frame_status_ = RawFrameStatus::FAILED;
+    this->clear_exposure_assessment_();
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
     this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
@@ -457,6 +461,7 @@ bool AS7261Component::start_raw_frame_readout_() {
       {"ATDATA", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
   this->raw_frame_ = RawFrame{};
+  this->clear_exposure_assessment_();
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::INVALID;
   this->clear_calculated_duv_(CalculatedDuvStatus::INVALID);
@@ -470,6 +475,7 @@ bool AS7261Component::start_raw_frame_readout_() {
 
   this->sequence_owner_ = SequenceOwner::NONE;
   this->raw_frame_status_ = RawFrameStatus::FAILED;
+  this->clear_exposure_assessment_();
   this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
   this->clear_derived_color_(DerivedColorStatus::FAILED);
   this->clear_terminal_frame_state_();
@@ -482,6 +488,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->raw_frame_status_ = status == SequenceStatus::TIMEOUT    ? RawFrameStatus::TIMEOUT
                               : status == SequenceStatus::OVERFLOW ? RawFrameStatus::OVERFLOW
                                                                    : RawFrameStatus::FAILED;
+    this->clear_exposure_assessment_();
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
                                      : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
@@ -502,6 +509,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
   if (!parse_raw_frame_(this->first_response_value_(), &frame)) {
     this->raw_frame_ = RawFrame{};
     this->raw_frame_status_ = RawFrameStatus::MALFORMED;
+    this->clear_exposure_assessment_();
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
     this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
@@ -519,6 +527,9 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
            static_cast<unsigned>(this->raw_frame_.x), static_cast<unsigned>(this->raw_frame_.y),
            static_cast<unsigned>(this->raw_frame_.z), static_cast<unsigned>(this->raw_frame_.near_ir),
            static_cast<unsigned>(this->raw_frame_.dark), static_cast<unsigned>(this->raw_frame_.clear));
+  if (!this->assess_clear_channel_exposure_()) {
+    ESP_LOGW(TAG, "Unable to assess AS7261 clear-channel exposure");
+  }
   if (!this->start_calibrated_frame_readout_()) {
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
@@ -527,6 +538,46 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->publish_nan_default_measurement_outputs_();
     ESP_LOGW(TAG, "Unable to start AS7261 calibrated frame readout");
   }
+}
+
+void AS7261Component::clear_exposure_assessment_() { this->exposure_assessment_ = ExposureAssessment{}; }
+
+bool AS7261Component::assess_clear_channel_exposure_() {
+  if (this->raw_frame_status_ != RawFrameStatus::VALID) {
+    this->clear_exposure_assessment_();
+    return false;
+  }
+
+  ExposureAssessment assessment{};
+  assessment.clear_percent = (CLEAR_PERCENT_SCALE * static_cast<float>(this->raw_frame_.clear)) / RAW_CLEAR_FULL_SCALE;
+  if (!std::isfinite(assessment.clear_percent)) {
+    this->clear_exposure_assessment_();
+    return false;
+  }
+
+  if (assessment.clear_percent > CLEAR_OVEREXPOSED_PERCENT) {
+    assessment.status = ExposureAssessmentStatus::CLEAR_OVEREXPOSED;
+    assessment.guidance = ExposureAssessmentGuidance::RECOVER_OVEREXPOSED;
+  } else if (assessment.clear_percent >= CLEAR_NEAR_SATURATION_PERCENT) {
+    assessment.status = ExposureAssessmentStatus::CLEAR_NEAR_SATURATION;
+    assessment.guidance = ExposureAssessmentGuidance::DECREASE;
+  } else if (assessment.clear_percent >= CLEAR_TARGET_LOW_PERCENT) {
+    assessment.status = ExposureAssessmentStatus::CLEAR_TARGET;
+    assessment.guidance = ExposureAssessmentGuidance::ACCEPT;
+  } else if (assessment.clear_percent >= CLEAR_TRUSTED_LOW_PERCENT) {
+    assessment.status = ExposureAssessmentStatus::CLEAR_TOO_DARK;
+    assessment.guidance = ExposureAssessmentGuidance::INCREASE;
+  } else {
+    assessment.status = ExposureAssessmentStatus::CLEAR_TOO_DARK_JUMP;
+    assessment.guidance = ExposureAssessmentGuidance::JUMP_INCREASE;
+  }
+
+  this->exposure_assessment_ = assessment;
+  ESP_LOGD(TAG, "AS7261 clear exposure assessed: %.2f%%, status %s, guidance %s",
+           this->exposure_assessment_.clear_percent,
+           exposure_assessment_status_to_string_(this->exposure_assessment_.status),
+           exposure_assessment_guidance_to_string_(this->exposure_assessment_.guidance));
+  return true;
 }
 
 bool AS7261Component::start_calibrated_frame_readout_() {
@@ -1655,6 +1706,44 @@ const char *AS7261Component::derived_color_status_to_string_(DerivedColorStatus 
       return "overflow";
     case DerivedColorStatus::MALFORMED:
       return "malformed";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::exposure_assessment_status_to_string_(ExposureAssessmentStatus status) {
+  switch (status) {
+    case ExposureAssessmentStatus::INVALID:
+      return "invalid";
+    case ExposureAssessmentStatus::CLEAR_OVEREXPOSED:
+      return "clear_overexposed";
+    case ExposureAssessmentStatus::CLEAR_NEAR_SATURATION:
+      return "clear_near_saturation";
+    case ExposureAssessmentStatus::CLEAR_TARGET:
+      return "clear_target";
+    case ExposureAssessmentStatus::CLEAR_TOO_DARK:
+      return "clear_too_dark";
+    case ExposureAssessmentStatus::CLEAR_TOO_DARK_JUMP:
+      return "clear_too_dark_jump";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::exposure_assessment_guidance_to_string_(ExposureAssessmentGuidance guidance) {
+  switch (guidance) {
+    case ExposureAssessmentGuidance::INVALID:
+      return "invalid";
+    case ExposureAssessmentGuidance::ACCEPT:
+      return "accept";
+    case ExposureAssessmentGuidance::DECREASE:
+      return "decrease";
+    case ExposureAssessmentGuidance::INCREASE:
+      return "increase";
+    case ExposureAssessmentGuidance::JUMP_INCREASE:
+      return "jump_increase";
+    case ExposureAssessmentGuidance::RECOVER_OVEREXPOSED:
+      return "recover_overexposed";
     default:
       return "unknown";
   }

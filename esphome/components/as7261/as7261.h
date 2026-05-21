@@ -162,6 +162,24 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     MALFORMED,
   };
 
+  enum class ExposureAssessmentStatus : uint8_t {
+    INVALID,
+    CLEAR_OVEREXPOSED,
+    CLEAR_NEAR_SATURATION,
+    CLEAR_TARGET,
+    CLEAR_TOO_DARK,
+    CLEAR_TOO_DARK_JUMP,
+  };
+
+  enum class ExposureAssessmentGuidance : uint8_t {
+    INVALID,
+    ACCEPT,
+    DECREASE,
+    INCREASE,
+    JUMP_INCREASE,
+    RECOVER_OVEREXPOSED,
+  };
+
   struct RawFrame {
     uint16_t x;
     uint16_t y;
@@ -188,6 +206,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     float duv;
     Cie1960UcsPoint measured;
     Cie1960UcsPoint planckian;
+  };
+
+  struct ExposureAssessment {
+    float clear_percent;
+    ExposureAssessmentStatus status;
+    ExposureAssessmentGuidance guidance;
   };
 
   struct OklabColor {
@@ -232,6 +256,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr float PLANCKIAN_LOCUS_MID_CCT_K = 4000.0f;
   static constexpr float PLANCKIAN_LOCUS_MAX_CCT_K = 25000.0f;
   static constexpr float CIE_1960_UCS_DENOMINATOR_EPSILON = 1.0e-6f;
+  static constexpr float RAW_CLEAR_FULL_SCALE = 65535.0f;
+  static constexpr float CLEAR_PERCENT_SCALE = 100.0f;
+  static constexpr float CLEAR_OVEREXPOSED_PERCENT = 98.0f;
+  static constexpr float CLEAR_NEAR_SATURATION_PERCENT = 88.0f;
+  static constexpr float CLEAR_TARGET_LOW_PERCENT = 20.0f;
+  static constexpr float CLEAR_TRUSTED_LOW_PERCENT = 5.0f;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
@@ -265,6 +295,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void handle_finished_calibrated_frame_readout_(SequenceStatus status);
   void clear_calculated_duv_(CalculatedDuvStatus status);
   void clear_derived_color_(DerivedColorStatus status);
+  void clear_exposure_assessment_();
+  bool assess_clear_channel_exposure_();
   bool default_measurement_outputs_publishable_() const;
   void publish_default_measurement_outputs_();
   void publish_nan_default_measurement_outputs_();
@@ -316,6 +348,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *calibrated_frame_status_to_string_(CalibratedFrameStatus status);
   static const char *calculated_duv_status_to_string_(CalculatedDuvStatus status);
   static const char *derived_color_status_to_string_(DerivedColorStatus status);
+  static const char *exposure_assessment_status_to_string_(ExposureAssessmentStatus status);
+  static const char *exposure_assessment_guidance_to_string_(ExposureAssessmentGuidance guidance);
   static uint8_t gain_to_at_value_(AS7261Gain gain);
 
   InternalGPIOPin *int_pin_{nullptr};
@@ -350,6 +384,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   CalculatedDuvStatus calculated_duv_status_{CalculatedDuvStatus::INVALID};
   DerivedColorFrame derived_color_frame_{};
   DerivedColorStatus derived_color_status_{DerivedColorStatus::INVALID};
+  ExposureAssessment exposure_assessment_{};
   int16_t last_device_temperature_c_{0};
   bool device_temperature_valid_{false};
   bool device_temperature_invalid_{false};
