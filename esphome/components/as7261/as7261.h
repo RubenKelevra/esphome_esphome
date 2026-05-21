@@ -74,6 +74,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     this->manual_exposure_state_ = ManualExposureCommandState::PENDING;
     this->gain_ = gain;
     this->integration_time_ = integration_time;
+    this->clear_auto_exposure_policy_();
   }
 
  protected:
@@ -186,6 +187,17 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     RECOVER_OVEREXPOSED,
   };
 
+  enum class AutoExposurePolicyAction : uint8_t {
+    INERT,
+    PENDING_ASSESSMENT,
+    ACCEPT_CURRENT,
+    DECREASE,
+    INCREASE,
+    JUMP_INCREASE,
+    RECOVER_OVEREXPOSED,
+    INVALID_ASSESSMENT,
+  };
+
   struct RawFrame {
     uint16_t x;
     uint16_t y;
@@ -218,6 +230,26 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     float clear_percent;
     ExposureAssessmentStatus status;
     ExposureAssessmentGuidance guidance;
+  };
+
+  struct AutoExposureCandidate {
+    AS7261Gain gain;
+    uint8_t integration_time;
+  };
+
+  struct AutoExposureAdjustment {
+    AutoExposureCandidate candidate;
+    bool clamped;
+  };
+
+  struct AutoExposurePolicy {
+    AutoExposureCandidate current_candidate;
+    AutoExposureCandidate next_candidate;
+    AutoExposurePolicyAction action;
+    bool candidate_initialized;
+    bool accepted;
+    bool dark_channel_recovery_required;
+    bool clamped;
   };
 
   struct OklabColor {
@@ -268,6 +300,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr float CLEAR_NEAR_SATURATION_PERCENT = 88.0f;
   static constexpr float CLEAR_TARGET_LOW_PERCENT = 20.0f;
   static constexpr float CLEAR_TRUSTED_LOW_PERCENT = 5.0f;
+  static constexpr uint8_t AUTO_EXPOSURE_MIN_INTEGRATION_TIME = 1;
+  static constexpr AS7261Gain AUTO_EXPOSURE_FALLBACK_GAIN = AS7261_GAIN_16X;
+  static constexpr float AUTO_EXPOSURE_TARGET_CLEAR_PERCENT =
+      (CLEAR_TARGET_LOW_PERCENT + CLEAR_NEAR_SATURATION_PERCENT) / 2.0f;
+  static constexpr float AUTO_EXPOSURE_JUMP_INCREASE_MULTIPLIER = 8.0f;
+  static constexpr uint8_t AUTO_EXPOSURE_GAIN_STEP_COUNT = 3;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
@@ -304,6 +342,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void clear_derived_color_(DerivedColorStatus status);
   void clear_exposure_assessment_();
   bool assess_clear_channel_exposure_();
+  void clear_auto_exposure_policy_();
+  void initialize_auto_exposure_policy_();
+  bool update_auto_exposure_policy_();
+  AutoExposureAdjustment scale_auto_exposure_candidate_(AutoExposureCandidate candidate, float multiplier) const;
+  static AutoExposureCandidate normalize_auto_exposure_candidate_(AutoExposureCandidate candidate);
+  static uint8_t clamp_auto_exposure_integration_time_(float integration_time);
   bool default_measurement_outputs_publishable_() const;
   void publish_default_measurement_outputs_();
   void publish_nan_default_measurement_outputs_();
@@ -358,6 +402,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *derived_color_status_to_string_(DerivedColorStatus status);
   static const char *exposure_assessment_status_to_string_(ExposureAssessmentStatus status);
   static const char *exposure_assessment_guidance_to_string_(ExposureAssessmentGuidance guidance);
+  static const char *auto_exposure_policy_action_to_string_(AutoExposurePolicyAction action);
+  static float auto_exposure_gain_multiplier_(AS7261Gain gain);
+  static AS7261Gain next_higher_auto_exposure_gain_(AS7261Gain gain, bool *stepped);
+  static AS7261Gain next_lower_auto_exposure_gain_(AS7261Gain gain, bool *stepped);
   static uint8_t gain_to_at_value_(AS7261Gain gain);
 
   InternalGPIOPin *int_pin_{nullptr};
@@ -393,6 +441,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   DerivedColorFrame derived_color_frame_{};
   DerivedColorStatus derived_color_status_{DerivedColorStatus::INVALID};
   ExposureAssessment exposure_assessment_{};
+  AutoExposurePolicy auto_exposure_policy_{};
   int16_t last_device_temperature_c_{0};
   bool device_temperature_valid_{false};
   bool device_temperature_invalid_{false};

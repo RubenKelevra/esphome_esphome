@@ -19,6 +19,11 @@ void AS7261Component::setup() {
     this->reset_pin_->setup();
     this->release_reset_pulse_();
   }
+  if (this->manual_exposure_) {
+    this->clear_auto_exposure_policy_();
+  } else {
+    this->initialize_auto_exposure_policy_();
+  }
 }
 
 void AS7261Component::dump_config() {
@@ -91,6 +96,11 @@ void AS7261Component::request_manual_measurement() {
 
 bool AS7261Component::start_measurement_cycle_() {
   this->clear_exposure_assessment_();
+  if (this->manual_exposure_) {
+    this->clear_auto_exposure_policy_();
+  } else {
+    this->initialize_auto_exposure_policy_();
+  }
   if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
     return this->start_manual_exposure_commands_();
   }
@@ -548,6 +558,8 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
   if (!this->assess_clear_channel_exposure_()) {
     ESP_LOGW(TAG, "Unable to assess AS7261 clear-channel exposure");
   }
+  this->update_auto_exposure_policy_();
+
   if (!this->start_calibrated_frame_readout_()) {
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
@@ -596,6 +608,177 @@ bool AS7261Component::assess_clear_channel_exposure_() {
            exposure_assessment_status_to_string_(this->exposure_assessment_.status),
            exposure_assessment_guidance_to_string_(this->exposure_assessment_.guidance));
   return true;
+}
+
+void AS7261Component::clear_auto_exposure_policy_() { this->auto_exposure_policy_ = AutoExposurePolicy{}; }
+
+void AS7261Component::initialize_auto_exposure_policy_() {
+  if (this->manual_exposure_ || this->auto_exposure_policy_.candidate_initialized) {
+    return;
+  }
+
+  const AutoExposureCandidate candidate{AUTO_EXPOSURE_FALLBACK_GAIN, AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME};
+  this->auto_exposure_policy_.current_candidate = candidate;
+  this->auto_exposure_policy_.next_candidate = candidate;
+  this->auto_exposure_policy_.action = AutoExposurePolicyAction::PENDING_ASSESSMENT;
+  this->auto_exposure_policy_.candidate_initialized = true;
+}
+
+bool AS7261Component::update_auto_exposure_policy_() {
+  if (this->manual_exposure_) {
+    return true;
+  }
+
+  this->initialize_auto_exposure_policy_();
+  AutoExposurePolicy &policy = this->auto_exposure_policy_;
+  policy.current_candidate = normalize_auto_exposure_candidate_(policy.current_candidate);
+  policy.next_candidate = policy.current_candidate;
+  policy.accepted = false;
+  policy.dark_channel_recovery_required = false;
+  policy.clamped = false;
+
+  const ExposureAssessment &assessment = this->exposure_assessment_;
+  if (assessment.guidance == ExposureAssessmentGuidance::INVALID || !std::isfinite(assessment.clear_percent) ||
+      assessment.clear_percent <= 0.0f) {
+    policy.action = AutoExposurePolicyAction::INVALID_ASSESSMENT;
+    return false;
+  }
+
+  if (assessment.guidance == ExposureAssessmentGuidance::ACCEPT) {
+    policy.action = AutoExposurePolicyAction::ACCEPT_CURRENT;
+    policy.accepted = true;
+  } else {
+    float multiplier = AUTO_EXPOSURE_TARGET_CLEAR_PERCENT / assessment.clear_percent;
+    switch (assessment.guidance) {
+      case ExposureAssessmentGuidance::DECREASE:
+        policy.action = AutoExposurePolicyAction::DECREASE;
+        break;
+      case ExposureAssessmentGuidance::INCREASE:
+        policy.action = AutoExposurePolicyAction::INCREASE;
+        break;
+      case ExposureAssessmentGuidance::JUMP_INCREASE:
+        policy.action = AutoExposurePolicyAction::JUMP_INCREASE;
+        multiplier = AUTO_EXPOSURE_JUMP_INCREASE_MULTIPLIER;
+        break;
+      case ExposureAssessmentGuidance::RECOVER_OVEREXPOSED:
+        policy.action = AutoExposurePolicyAction::RECOVER_OVEREXPOSED;
+        policy.dark_channel_recovery_required = true;
+        break;
+      default:
+        policy.action = AutoExposurePolicyAction::INVALID_ASSESSMENT;
+        return false;
+    }
+
+    const AutoExposureAdjustment adjustment =
+        this->scale_auto_exposure_candidate_(policy.current_candidate, multiplier);
+    policy.next_candidate = adjustment.candidate;
+    policy.clamped = adjustment.clamped;
+  }
+
+  ESP_LOGD(TAG, "AS7261 auto exposure policy: action %s, current gain %u int %u, next gain %u int %u%s%s",
+           auto_exposure_policy_action_to_string_(policy.action),
+           static_cast<unsigned>(gain_to_at_value_(policy.current_candidate.gain)),
+           static_cast<unsigned>(policy.current_candidate.integration_time),
+           static_cast<unsigned>(gain_to_at_value_(policy.next_candidate.gain)),
+           static_cast<unsigned>(policy.next_candidate.integration_time),
+           policy.dark_channel_recovery_required ? ", dark recovery required" : "", policy.clamped ? ", clamped" : "");
+  return true;
+}
+
+AS7261Component::AutoExposureAdjustment AS7261Component::scale_auto_exposure_candidate_(AutoExposureCandidate candidate,
+                                                                                        float multiplier) const {
+  AutoExposureAdjustment adjustment{normalize_auto_exposure_candidate_(candidate), false};
+  if (!std::isfinite(multiplier) || multiplier <= 0.0f) {
+    adjustment.clamped = true;
+    return adjustment;
+  }
+
+  if (multiplier > 1.0f) {
+    const float desired_integration_time = static_cast<float>(adjustment.candidate.integration_time) * multiplier;
+    if (desired_integration_time <= static_cast<float>(AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME)) {
+      adjustment.candidate.integration_time = clamp_auto_exposure_integration_time_(desired_integration_time);
+      return adjustment;
+    }
+
+    const float integration_multiplier = static_cast<float>(AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME) /
+                                         static_cast<float>(adjustment.candidate.integration_time);
+    float remaining_multiplier = multiplier / integration_multiplier;
+    adjustment.candidate.integration_time = AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
+
+    for (uint8_t step = 0; step < AUTO_EXPOSURE_GAIN_STEP_COUNT && remaining_multiplier > 1.0f; step++) {
+      bool stepped = false;
+      const AS7261Gain next_gain = next_higher_auto_exposure_gain_(adjustment.candidate.gain, &stepped);
+      if (!stepped) {
+        adjustment.clamped = true;
+        break;
+      }
+      const float gain_multiplier =
+          auto_exposure_gain_multiplier_(next_gain) / auto_exposure_gain_multiplier_(adjustment.candidate.gain);
+      adjustment.candidate.gain = next_gain;
+      remaining_multiplier /= gain_multiplier;
+    }
+    if (remaining_multiplier > 1.0f) {
+      adjustment.clamped = true;
+    }
+    return adjustment;
+  }
+
+  if (multiplier < 1.0f) {
+    const float desired_integration_time = static_cast<float>(adjustment.candidate.integration_time) * multiplier;
+    if (desired_integration_time >= static_cast<float>(AUTO_EXPOSURE_MIN_INTEGRATION_TIME)) {
+      adjustment.candidate.integration_time = clamp_auto_exposure_integration_time_(desired_integration_time);
+      return adjustment;
+    }
+
+    const float integration_multiplier = static_cast<float>(AUTO_EXPOSURE_MIN_INTEGRATION_TIME) /
+                                         static_cast<float>(adjustment.candidate.integration_time);
+    float remaining_multiplier = multiplier / integration_multiplier;
+    adjustment.candidate.integration_time = AUTO_EXPOSURE_MIN_INTEGRATION_TIME;
+
+    for (uint8_t step = 0; step < AUTO_EXPOSURE_GAIN_STEP_COUNT && remaining_multiplier < 1.0f; step++) {
+      bool stepped = false;
+      const AS7261Gain next_gain = next_lower_auto_exposure_gain_(adjustment.candidate.gain, &stepped);
+      if (!stepped) {
+        adjustment.clamped = true;
+        break;
+      }
+      const float gain_multiplier =
+          auto_exposure_gain_multiplier_(next_gain) / auto_exposure_gain_multiplier_(adjustment.candidate.gain);
+      adjustment.candidate.gain = next_gain;
+      remaining_multiplier /= gain_multiplier;
+    }
+    if (remaining_multiplier < 1.0f) {
+      adjustment.clamped = true;
+    }
+  }
+
+  return adjustment;
+}
+
+AS7261Component::AutoExposureCandidate AS7261Component::normalize_auto_exposure_candidate_(
+    AutoExposureCandidate candidate) {
+  switch (candidate.gain) {
+    case AS7261_GAIN_1X:
+    case AS7261_GAIN_3_7X:
+    case AS7261_GAIN_16X:
+    case AS7261_GAIN_64X:
+      break;
+    default:
+      candidate.gain = AUTO_EXPOSURE_FALLBACK_GAIN;
+      break;
+  }
+  candidate.integration_time = clamp_auto_exposure_integration_time_(static_cast<float>(candidate.integration_time));
+  return candidate;
+}
+
+uint8_t AS7261Component::clamp_auto_exposure_integration_time_(float integration_time) {
+  if (!std::isfinite(integration_time) || integration_time <= static_cast<float>(AUTO_EXPOSURE_MIN_INTEGRATION_TIME)) {
+    return AUTO_EXPOSURE_MIN_INTEGRATION_TIME;
+  }
+  if (integration_time >= static_cast<float>(AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME)) {
+    return AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
+  }
+  return static_cast<uint8_t>(std::round(integration_time));
 }
 
 bool AS7261Component::start_calibrated_frame_readout_() {
@@ -1780,6 +1963,84 @@ const char *AS7261Component::exposure_assessment_guidance_to_string_(ExposureAss
       return "recover_overexposed";
     default:
       return "unknown";
+  }
+}
+
+const char *AS7261Component::auto_exposure_policy_action_to_string_(AutoExposurePolicyAction action) {
+  switch (action) {
+    case AutoExposurePolicyAction::INERT:
+      return "inert";
+    case AutoExposurePolicyAction::PENDING_ASSESSMENT:
+      return "pending_assessment";
+    case AutoExposurePolicyAction::ACCEPT_CURRENT:
+      return "accept_current";
+    case AutoExposurePolicyAction::DECREASE:
+      return "decrease";
+    case AutoExposurePolicyAction::INCREASE:
+      return "increase";
+    case AutoExposurePolicyAction::JUMP_INCREASE:
+      return "jump_increase";
+    case AutoExposurePolicyAction::RECOVER_OVEREXPOSED:
+      return "recover_overexposed";
+    case AutoExposurePolicyAction::INVALID_ASSESSMENT:
+      return "invalid_assessment";
+    default:
+      return "unknown";
+  }
+}
+
+float AS7261Component::auto_exposure_gain_multiplier_(AS7261Gain gain) {
+  switch (gain) {
+    case AS7261_GAIN_1X:
+      return 1.0f;
+    case AS7261_GAIN_3_7X:
+      return 3.7f;
+    case AS7261_GAIN_16X:
+      return 16.0f;
+    case AS7261_GAIN_64X:
+      return 64.0f;
+    default:
+      return 16.0f;
+  }
+}
+
+AS7261Gain AS7261Component::next_higher_auto_exposure_gain_(AS7261Gain gain, bool *stepped) {
+  if (stepped != nullptr) {
+    *stepped = true;
+  }
+  switch (gain) {
+    case AS7261_GAIN_1X:
+      return AS7261_GAIN_3_7X;
+    case AS7261_GAIN_3_7X:
+      return AS7261_GAIN_16X;
+    case AS7261_GAIN_16X:
+      return AS7261_GAIN_64X;
+    case AS7261_GAIN_64X:
+    default:
+      if (stepped != nullptr) {
+        *stepped = false;
+      }
+      return AS7261_GAIN_64X;
+  }
+}
+
+AS7261Gain AS7261Component::next_lower_auto_exposure_gain_(AS7261Gain gain, bool *stepped) {
+  if (stepped != nullptr) {
+    *stepped = true;
+  }
+  switch (gain) {
+    case AS7261_GAIN_64X:
+      return AS7261_GAIN_16X;
+    case AS7261_GAIN_16X:
+      return AS7261_GAIN_3_7X;
+    case AS7261_GAIN_3_7X:
+      return AS7261_GAIN_1X;
+    case AS7261_GAIN_1X:
+    default:
+      if (stepped != nullptr) {
+        *stepped = false;
+      }
+      return AS7261_GAIN_1X;
   }
 }
 
