@@ -69,6 +69,7 @@ void AS7261Component::loop() {
   this->poll_transport_();
   this->poll_command_sequence_();
   this->poll_frame_trigger_();
+  this->poll_single_bank_probe_();
 }
 
 void AS7261Component::update() {
@@ -281,6 +282,15 @@ void AS7261Component::finish_command_sequence_(SequenceStatus status) {
       break;
     case SequenceOwner::CALIBRATED_FRAME_READOUT:
       this->handle_finished_calibrated_frame_readout_(status);
+      break;
+    case SequenceOwner::SINGLE_BANK_PROBE_CONFIGURE:
+      this->handle_finished_single_bank_probe_configure_(status);
+      break;
+    case SequenceOwner::SINGLE_BANK_PROBE_STOP:
+      this->handle_finished_single_bank_probe_stop_(status);
+      break;
+    case SequenceOwner::SINGLE_BANK_PROBE_RAW_READOUT:
+      this->handle_finished_single_bank_probe_raw_readout_(status);
       break;
     case SequenceOwner::NONE:
       break;
@@ -555,6 +565,189 @@ void AS7261Component::poll_frame_trigger_() {
     ESP_LOGW(TAG, "AS7261 one-shot frame timed out waiting for INT after %u ms",
              static_cast<unsigned>(this->frame_watchdog_timeout_ms_));
   }
+}
+
+bool AS7261Component::start_single_bank_probe_() {
+  if (this->manual_exposure_ || this->transport_busy_() || this->sequence_active_() ||
+      this->frame_state_ != FrameState::IDLE || this->single_bank_probe_state_ != SingleBankProbeState::IDLE) {
+    return false;
+  }
+  if (this->int_pin_ == nullptr) {
+    this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
+    ESP_LOGE(TAG, "AS7261 INT pin is not configured; cannot run single-bank probe");
+    return false;
+  }
+
+  this->initialize_auto_exposure_policy_();
+  const int mode_command_length = std::snprintf(this->single_bank_probe_mode_command_, COMMAND_BUFFER_LENGTH,
+                                                "ATTCSMD=%u", static_cast<unsigned>(SINGLE_BANK_PROBE_SENSOR_MODE));
+  const int interval_command_length =
+      std::snprintf(this->single_bank_probe_interval_command_, COMMAND_BUFFER_LENGTH, "ATINTRVL=%u",
+                    static_cast<unsigned>(this->calculate_single_bank_probe_interval_()));
+  if (mode_command_length <= 0 || mode_command_length >= static_cast<int>(COMMAND_BUFFER_LENGTH) ||
+      interval_command_length <= 0 || interval_command_length >= static_cast<int>(COMMAND_BUFFER_LENGTH)) {
+    this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
+    return false;
+  }
+
+  const CommandSequenceStep steps[] = {
+      {this->single_bank_probe_mode_command_, DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {this->single_bank_probe_interval_command_, DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATBURST=1", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  this->single_bank_probe_raw_frame_ = RawFrame{};
+  this->single_bank_probe_status_ = SingleBankProbeStatus::RUNNING;
+  this->single_bank_probe_state_ = SingleBankProbeState::CONFIGURE_RUNNING;
+  this->sequence_owner_ = SequenceOwner::SINGLE_BANK_PROBE_CONFIGURE;
+  if (this->start_command_sequence_(steps, 3)) {
+    return true;
+  }
+
+  this->sequence_owner_ = SequenceOwner::NONE;
+  this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
+  return false;
+}
+
+void AS7261Component::handle_finished_single_bank_probe_configure_(SequenceStatus status) {
+  if (status != SequenceStatus::COMPLETED) {
+    this->clear_single_bank_probe_result_(status == SequenceStatus::TIMEOUT    ? SingleBankProbeStatus::TIMEOUT
+                                          : status == SequenceStatus::OVERFLOW ? SingleBankProbeStatus::OVERFLOW
+                                                                               : SingleBankProbeStatus::FAILED);
+    ESP_LOGW(TAG, "AS7261 single-bank probe configuration failed with %s", this->sequence_status_to_string_(status));
+    return;
+  }
+
+  this->single_bank_probe_wait_started_millis_ = millis();
+  this->single_bank_probe_watchdog_timeout_ms_ = this->calculate_single_bank_probe_watchdog_timeout_ms_();
+  this->single_bank_probe_state_ = SingleBankProbeState::WAITING_INT;
+  this->single_bank_probe_status_ = SingleBankProbeStatus::RUNNING;
+  ESP_LOGD(TAG, "AS7261 single-bank probe burst started; waiting up to %u ms for INT",
+           static_cast<unsigned>(this->single_bank_probe_watchdog_timeout_ms_));
+}
+
+void AS7261Component::poll_single_bank_probe_() {
+  if (this->single_bank_probe_state_ != SingleBankProbeState::WAITING_INT) {
+    return;
+  }
+
+  if (this->frame_int_ready_()) {
+    if (!this->start_single_bank_probe_stop_()) {
+      this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
+      ESP_LOGW(TAG, "Unable to stop AS7261 single-bank probe burst after INT");
+    }
+    return;
+  }
+
+  if (millis() - this->single_bank_probe_wait_started_millis_ >= this->single_bank_probe_watchdog_timeout_ms_) {
+    this->single_bank_probe_raw_frame_ = RawFrame{};
+    this->single_bank_probe_status_ = SingleBankProbeStatus::TIMEOUT;
+    ESP_LOGW(TAG, "AS7261 single-bank probe timed out waiting for INT after %u ms",
+             static_cast<unsigned>(this->single_bank_probe_watchdog_timeout_ms_));
+    if (!this->start_single_bank_probe_stop_()) {
+      this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
+    }
+  }
+}
+
+bool AS7261Component::start_single_bank_probe_stop_() {
+  if (this->transport_busy_() || this->sequence_active_() ||
+      this->single_bank_probe_state_ != SingleBankProbeState::WAITING_INT) {
+    return false;
+  }
+
+  const CommandSequenceStep steps[] = {
+      {"ATBURST=0", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  if (this->single_bank_probe_status_ != SingleBankProbeStatus::TIMEOUT) {
+    this->single_bank_probe_status_ = SingleBankProbeStatus::RUNNING;
+  }
+  this->single_bank_probe_state_ = SingleBankProbeState::STOP_RUNNING;
+  this->sequence_owner_ = SequenceOwner::SINGLE_BANK_PROBE_STOP;
+  if (this->start_command_sequence_(steps, 1)) {
+    return true;
+  }
+
+  this->sequence_owner_ = SequenceOwner::NONE;
+  this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
+  return false;
+}
+
+void AS7261Component::handle_finished_single_bank_probe_stop_(SequenceStatus status) {
+  if (this->single_bank_probe_status_ == SingleBankProbeStatus::TIMEOUT) {
+    this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
+    ESP_LOGW(TAG, "AS7261 single-bank probe burst stopped after INT timeout with %s",
+             this->sequence_status_to_string_(status));
+    return;
+  }
+
+  if (status != SequenceStatus::COMPLETED) {
+    this->clear_single_bank_probe_result_(status == SequenceStatus::TIMEOUT    ? SingleBankProbeStatus::TIMEOUT
+                                          : status == SequenceStatus::OVERFLOW ? SingleBankProbeStatus::OVERFLOW
+                                                                               : SingleBankProbeStatus::FAILED);
+    ESP_LOGW(TAG, "AS7261 single-bank probe burst stop failed with %s", this->sequence_status_to_string_(status));
+    return;
+  }
+
+  if (!this->start_single_bank_probe_raw_readout_()) {
+    this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
+    ESP_LOGW(TAG, "Unable to start AS7261 single-bank probe raw readout after burst stop");
+  }
+}
+
+bool AS7261Component::start_single_bank_probe_raw_readout_() {
+  if (this->transport_busy_() || this->sequence_active_() ||
+      this->single_bank_probe_state_ != SingleBankProbeState::STOP_RUNNING) {
+    return false;
+  }
+
+  const CommandSequenceStep steps[] = {
+      {"ATDATA", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  this->single_bank_probe_raw_frame_ = RawFrame{};
+  this->single_bank_probe_status_ = SingleBankProbeStatus::RUNNING;
+  this->single_bank_probe_state_ = SingleBankProbeState::RAW_READOUT_RUNNING;
+  this->sequence_owner_ = SequenceOwner::SINGLE_BANK_PROBE_RAW_READOUT;
+  if (this->start_command_sequence_(steps, 1)) {
+    return true;
+  }
+
+  this->sequence_owner_ = SequenceOwner::NONE;
+  this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
+  return false;
+}
+
+void AS7261Component::handle_finished_single_bank_probe_raw_readout_(SequenceStatus status) {
+  if (status != SequenceStatus::COMPLETED) {
+    this->clear_single_bank_probe_result_(status == SequenceStatus::TIMEOUT    ? SingleBankProbeStatus::TIMEOUT
+                                          : status == SequenceStatus::OVERFLOW ? SingleBankProbeStatus::OVERFLOW
+                                                                               : SingleBankProbeStatus::FAILED);
+    ESP_LOGW(TAG, "AS7261 single-bank probe raw readout failed with %s", this->sequence_status_to_string_(status));
+    return;
+  }
+
+  RawFrame frame{};
+  if (!parse_raw_frame_(this->first_response_value_(), &frame)) {
+    this->clear_single_bank_probe_result_(SingleBankProbeStatus::MALFORMED);
+    ESP_LOGW(TAG, "Unable to parse AS7261 single-bank probe raw response: %s", this->response_buffer_);
+    return;
+  }
+
+  this->single_bank_probe_raw_frame_ = frame;
+  this->single_bank_probe_status_ = SingleBankProbeStatus::VALID;
+  this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
+  ESP_LOGD(TAG, "AS7261 single-bank probe raw frame stored: X=%u Y=%u Z=%u NIR=%u Dark=%u Clear=%u",
+           static_cast<unsigned>(this->single_bank_probe_raw_frame_.x),
+           static_cast<unsigned>(this->single_bank_probe_raw_frame_.y),
+           static_cast<unsigned>(this->single_bank_probe_raw_frame_.z),
+           static_cast<unsigned>(this->single_bank_probe_raw_frame_.near_ir),
+           static_cast<unsigned>(this->single_bank_probe_raw_frame_.dark),
+           static_cast<unsigned>(this->single_bank_probe_raw_frame_.clear));
+}
+
+void AS7261Component::clear_single_bank_probe_result_(SingleBankProbeStatus status) {
+  this->single_bank_probe_raw_frame_ = RawFrame{};
+  this->single_bank_probe_status_ = status;
+  this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
 }
 
 bool AS7261Component::start_raw_frame_readout_() {
@@ -1289,6 +1482,43 @@ uint32_t AS7261Component::calculate_frame_watchdog_timeout_ms_() const {
   return ((conversion_time_us + 999UL) / 1000UL) + FRAME_WATCHDOG_MARGIN_MS;
 }
 
+uint8_t AS7261Component::single_bank_probe_integration_time_() const {
+  if (this->manual_exposure_ && this->integration_time_ != 0) {
+    return this->integration_time_;
+  }
+  if (this->auto_exposure_policy_.candidate_initialized) {
+    const AutoExposureCandidate candidate =
+        normalize_auto_exposure_candidate_(this->auto_exposure_policy_.current_candidate);
+    return candidate.integration_time;
+  }
+  return AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
+}
+
+uint8_t AS7261Component::calculate_single_bank_probe_interval_() const {
+  const uint32_t integration_time_us =
+      static_cast<uint32_t>(this->single_bank_probe_integration_time_()) * AS7261_INTEGRATION_TIME_STEP_US;
+  if (integration_time_us == 0) {
+    return 1;
+  }
+  uint32_t interval = (SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US + integration_time_us - 1UL) / integration_time_us;
+  if (interval < 1UL) {
+    interval = 1UL;
+  }
+  if (interval > 255UL) {
+    interval = 255UL;
+  }
+  return static_cast<uint8_t>(interval);
+}
+
+uint32_t AS7261Component::calculate_single_bank_probe_watchdog_timeout_ms_() const {
+  const uint32_t integration_time_us =
+      static_cast<uint32_t>(this->single_bank_probe_integration_time_()) * AS7261_INTEGRATION_TIME_STEP_US;
+  const uint32_t conversion_time_us = integration_time_us > SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US
+                                          ? integration_time_us
+                                          : SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US;
+  return ((conversion_time_us + 999UL) / 1000UL) + FRAME_WATCHDOG_MARGIN_MS;
+}
+
 void AS7261Component::handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result) {
   if (result != TransportResult::OK) {
     ESP_LOGW(TAG, "AS7261 diagnostic command %s failed with %s", this->diagnostic_state_to_string_(state),
@@ -1965,6 +2195,44 @@ const char *AS7261Component::raw_frame_status_to_string_(RawFrameStatus status) 
     case RawFrameStatus::OVERFLOW:
       return "overflow";
     case RawFrameStatus::MALFORMED:
+      return "malformed";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::single_bank_probe_state_to_string_(SingleBankProbeState state) {
+  switch (state) {
+    case SingleBankProbeState::IDLE:
+      return "idle";
+    case SingleBankProbeState::CONFIGURE_RUNNING:
+      return "configure_running";
+    case SingleBankProbeState::WAITING_INT:
+      return "waiting_int";
+    case SingleBankProbeState::STOP_RUNNING:
+      return "stop_running";
+    case SingleBankProbeState::RAW_READOUT_RUNNING:
+      return "raw_readout_running";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::single_bank_probe_status_to_string_(SingleBankProbeStatus status) {
+  switch (status) {
+    case SingleBankProbeStatus::INVALID:
+      return "invalid";
+    case SingleBankProbeStatus::RUNNING:
+      return "running";
+    case SingleBankProbeStatus::VALID:
+      return "valid";
+    case SingleBankProbeStatus::FAILED:
+      return "failed";
+    case SingleBankProbeStatus::TIMEOUT:
+      return "timeout";
+    case SingleBankProbeStatus::OVERFLOW:
+      return "overflow";
+    case SingleBankProbeStatus::MALFORMED:
       return "malformed";
     default:
       return "unknown";

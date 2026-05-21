@@ -128,6 +128,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     FRAME_TRIGGER,
     RAW_FRAME_READOUT,
     CALIBRATED_FRAME_READOUT,
+    SINGLE_BANK_PROBE_CONFIGURE,
+    SINGLE_BANK_PROBE_STOP,
+    SINGLE_BANK_PROBE_RAW_READOUT,
   };
 
   enum class FrameState : uint8_t {
@@ -141,6 +144,24 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   };
 
   enum class RawFrameStatus : uint8_t {
+    INVALID,
+    RUNNING,
+    VALID,
+    FAILED,
+    TIMEOUT,
+    OVERFLOW,
+    MALFORMED,
+  };
+
+  enum class SingleBankProbeState : uint8_t {
+    IDLE,
+    CONFIGURE_RUNNING,
+    WAITING_INT,
+    STOP_RUNNING,
+    RAW_READOUT_RUNNING,
+  };
+
+  enum class SingleBankProbeStatus : uint8_t {
     INVALID,
     RUNNING,
     VALID,
@@ -296,6 +317,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr uint32_t AS7261_INTEGRATION_TIME_STEP_US = 2800;
   static constexpr uint8_t AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME = 255;
   static constexpr uint32_t FRAME_WATCHDOG_MARGIN_MS = 250;
+  static constexpr uint8_t SINGLE_BANK_PROBE_SENSOR_MODE = 1;
+  static constexpr uint32_t SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US = 50000;
   static constexpr float OKLAB_REFERENCE_ILLUMINANCE_LX = 1000.0f;
   static constexpr float OKLCH_ZERO_CHROMA_HUE_DEGREES = 0.0f;
   static constexpr float DEGREES_PER_RADIAN = 57.29577951308232f;
@@ -327,8 +350,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool frame_status_active_() const {
     return this->frame_state_ != FrameState::IDLE && this->frame_state_ != FrameState::TRIGGER_RUNNING;
   }
+  bool single_bank_probe_active_() const { return this->single_bank_probe_state_ != SingleBankProbeState::IDLE; }
   bool component_busy_() const {
-    return this->transport_busy_() || this->sequence_active_() || this->frame_status_active_();
+    return this->transport_busy_() || this->sequence_active_() || this->frame_status_active_() ||
+           this->single_bank_probe_active_();
   }
   bool begin_at_command_(const char *command, uint32_t timeout_ms = COMMAND_TIMEOUT_MS);
   void poll_transport_();
@@ -341,14 +366,22 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool start_manual_exposure_commands_();
   bool start_auto_exposure_candidate_commands_();
   bool start_one_shot_frame_trigger_();
+  bool start_single_bank_probe_();
   bool start_raw_frame_readout_();
   bool start_calibrated_frame_readout_();
   bool start_measurement_cycle_();
   void poll_frame_trigger_();
+  void poll_single_bank_probe_();
   void handle_finished_diagnostic_readout_(SequenceStatus status);
   void handle_finished_frame_trigger_(SequenceStatus status);
   void clear_terminal_frame_state_();
   void handle_finished_raw_frame_readout_(SequenceStatus status);
+  void handle_finished_single_bank_probe_configure_(SequenceStatus status);
+  void handle_finished_single_bank_probe_stop_(SequenceStatus status);
+  void handle_finished_single_bank_probe_raw_readout_(SequenceStatus status);
+  bool start_single_bank_probe_stop_();
+  bool start_single_bank_probe_raw_readout_();
+  void clear_single_bank_probe_result_(SingleBankProbeStatus status);
   void handle_finished_calibrated_frame_readout_(SequenceStatus status);
   void clear_calculated_duv_(CalculatedDuvStatus status);
   void clear_derived_color_(DerivedColorStatus status);
@@ -376,6 +409,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result);
   bool frame_int_ready_() const;
   uint32_t calculate_frame_watchdog_timeout_ms_() const;
+  uint8_t single_bank_probe_integration_time_() const;
+  uint8_t calculate_single_bank_probe_interval_() const;
+  uint32_t calculate_single_bank_probe_watchdog_timeout_ms_() const;
   void handle_finished_manual_exposure_commands_(SequenceStatus status);
   void handle_finished_auto_exposure_candidate_commands_(SequenceStatus status);
   void handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result);
@@ -412,6 +448,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *sequence_status_to_string_(SequenceStatus status);
   static const char *frame_state_to_string_(FrameState state);
   static const char *raw_frame_status_to_string_(RawFrameStatus status);
+  static const char *single_bank_probe_state_to_string_(SingleBankProbeState state);
+  static const char *single_bank_probe_status_to_string_(SingleBankProbeStatus status);
   static const char *calibrated_frame_status_to_string_(CalibratedFrameStatus status);
   static const char *calculated_duv_status_to_string_(CalculatedDuvStatus status);
   static const char *derived_color_status_to_string_(DerivedColorStatus status);
@@ -433,6 +471,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   AutoExposureCommandState auto_exposure_state_{AutoExposureCommandState::NOT_CONFIGURED};
   SequenceOwner sequence_owner_{SequenceOwner::NONE};
   FrameState frame_state_{FrameState::IDLE};
+  SingleBankProbeState single_bank_probe_state_{SingleBankProbeState::IDLE};
   CommandSequenceStep command_sequence_[COMMAND_SEQUENCE_LENGTH]{};
   size_t sequence_step_count_{0};
   size_t sequence_step_index_{0};
@@ -445,12 +484,18 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   char response_buffer_[RESPONSE_BUFFER_LENGTH]{};
   char manual_exposure_commands_[2][COMMAND_BUFFER_LENGTH]{};
   char auto_exposure_commands_[2][COMMAND_BUFFER_LENGTH]{};
+  char single_bank_probe_mode_command_[COMMAND_BUFFER_LENGTH]{};
+  char single_bank_probe_interval_command_[COMMAND_BUFFER_LENGTH]{};
   size_t response_length_{0};
   uint32_t frame_wait_started_millis_{0};
   uint32_t frame_watchdog_timeout_ms_{0};
+  uint32_t single_bank_probe_wait_started_millis_{0};
+  uint32_t single_bank_probe_watchdog_timeout_ms_{0};
   uint8_t response_line_count_{0};
   RawFrame raw_frame_{};
   RawFrameStatus raw_frame_status_{RawFrameStatus::INVALID};
+  RawFrame single_bank_probe_raw_frame_{};
+  SingleBankProbeStatus single_bank_probe_status_{SingleBankProbeStatus::INVALID};
   CalibratedFrame calibrated_frame_{};
   CalibratedFrameStatus calibrated_frame_status_{CalibratedFrameStatus::INVALID};
   CalculatedDuvFrame calculated_duv_frame_{};
