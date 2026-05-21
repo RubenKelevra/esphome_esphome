@@ -153,6 +153,15 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     MALFORMED,
   };
 
+  enum class CalculatedDuvStatus : uint8_t {
+    INVALID,
+    VALID,
+    FAILED,
+    TIMEOUT,
+    OVERFLOW,
+    MALFORMED,
+  };
+
   struct RawFrame {
     uint16_t x;
     uint16_t y;
@@ -168,6 +177,17 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     float z;
     float lux;
     float cct;
+  };
+
+  struct Cie1960UcsPoint {
+    float u;
+    float v;
+  };
+
+  struct CalculatedDuvFrame {
+    float duv;
+    Cie1960UcsPoint measured;
+    Cie1960UcsPoint planckian;
   };
 
   struct OklabColor {
@@ -206,6 +226,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr float OKLAB_REFERENCE_ILLUMINANCE_LX = 1000.0f;
   static constexpr float OKLCH_ZERO_CHROMA_HUE_DEGREES = 0.0f;
   static constexpr float DEGREES_PER_RADIAN = 57.29577951308232f;
+  // Piecewise CCT-to-CIE 1931 xy Planckian approximation range. Reject, do not extrapolate.
+  static constexpr float PLANCKIAN_LOCUS_MIN_CCT_K = 1667.0f;
+  static constexpr float PLANCKIAN_LOCUS_LOW_CCT_K = 2222.0f;
+  static constexpr float PLANCKIAN_LOCUS_MID_CCT_K = 4000.0f;
+  static constexpr float PLANCKIAN_LOCUS_MAX_CCT_K = 25000.0f;
+  static constexpr float CIE_1960_UCS_DENOMINATOR_EPSILON = 1.0e-6f;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
@@ -237,9 +263,15 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void clear_terminal_frame_state_();
   void handle_finished_raw_frame_readout_(SequenceStatus status);
   void handle_finished_calibrated_frame_readout_(SequenceStatus status);
+  void clear_calculated_duv_(CalculatedDuvStatus status);
   void clear_derived_color_(DerivedColorStatus status);
+  bool derive_calculated_duv_();
   bool derive_oklab_oklch_();
+  static bool calibrated_frame_valid_for_duv_(const CalibratedFrame &frame);
   static bool calibrated_xyz_valid_for_oklab_(const CalibratedFrame &frame);
+  static bool cie1960_uv_from_xyz_(const CalibratedFrame &frame, Cie1960UcsPoint *point);
+  static bool cie1960_uv_from_xy_(float x, float y, Cie1960UcsPoint *point);
+  static bool planckian_locus_uv_from_cct_(float cct, Cie1960UcsPoint *point);
   bool handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result);
   bool frame_int_ready_() const;
   uint32_t calculate_frame_watchdog_timeout_ms_() const;
@@ -279,6 +311,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static const char *frame_state_to_string_(FrameState state);
   static const char *raw_frame_status_to_string_(RawFrameStatus status);
   static const char *calibrated_frame_status_to_string_(CalibratedFrameStatus status);
+  static const char *calculated_duv_status_to_string_(CalculatedDuvStatus status);
   static const char *derived_color_status_to_string_(DerivedColorStatus status);
   static uint8_t gain_to_at_value_(AS7261Gain gain);
 
@@ -310,6 +343,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   RawFrameStatus raw_frame_status_{RawFrameStatus::INVALID};
   CalibratedFrame calibrated_frame_{};
   CalibratedFrameStatus calibrated_frame_status_{CalibratedFrameStatus::INVALID};
+  CalculatedDuvFrame calculated_duv_frame_{};
+  CalculatedDuvStatus calculated_duv_status_{CalculatedDuvStatus::INVALID};
   DerivedColorFrame derived_color_frame_{};
   DerivedColorStatus derived_color_status_{DerivedColorStatus::INVALID};
   int16_t last_device_temperature_c_{0};

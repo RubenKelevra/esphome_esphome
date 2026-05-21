@@ -386,6 +386,7 @@ void AS7261Component::poll_frame_trigger_() {
       this->raw_frame_status_ = RawFrameStatus::FAILED;
       this->calibrated_frame_ = CalibratedFrame{};
       this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+      this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
       this->clear_derived_color_(DerivedColorStatus::FAILED);
       this->clear_terminal_frame_state_();
       ESP_LOGW(TAG, "Unable to start AS7261 raw frame readout");
@@ -398,6 +399,7 @@ void AS7261Component::poll_frame_trigger_() {
     this->raw_frame_status_ = RawFrameStatus::TIMEOUT;
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::TIMEOUT;
+    this->clear_calculated_duv_(CalculatedDuvStatus::TIMEOUT);
     this->clear_derived_color_(DerivedColorStatus::TIMEOUT);
     this->clear_terminal_frame_state_();
     return;
@@ -408,6 +410,7 @@ void AS7261Component::poll_frame_trigger_() {
     this->raw_frame_status_ = RawFrameStatus::FAILED;
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+    this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
     this->clear_derived_color_(DerivedColorStatus::FAILED);
     this->clear_terminal_frame_state_();
     return;
@@ -439,6 +442,7 @@ bool AS7261Component::start_raw_frame_readout_() {
   this->raw_frame_ = RawFrame{};
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::INVALID;
+  this->clear_calculated_duv_(CalculatedDuvStatus::INVALID);
   this->clear_derived_color_(DerivedColorStatus::INVALID);
   this->frame_state_ = FrameState::READOUT_RUNNING;
   this->raw_frame_status_ = RawFrameStatus::RUNNING;
@@ -449,6 +453,7 @@ bool AS7261Component::start_raw_frame_readout_() {
 
   this->sequence_owner_ = SequenceOwner::NONE;
   this->raw_frame_status_ = RawFrameStatus::FAILED;
+  this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
   this->clear_derived_color_(DerivedColorStatus::FAILED);
   this->clear_terminal_frame_state_();
   return false;
@@ -464,6 +469,9 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
                                      : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
                                                                           : CalibratedFrameStatus::FAILED;
+    this->clear_calculated_duv_(status == SequenceStatus::TIMEOUT    ? CalculatedDuvStatus::TIMEOUT
+                                : status == SequenceStatus::OVERFLOW ? CalculatedDuvStatus::OVERFLOW
+                                                                     : CalculatedDuvStatus::FAILED);
     this->clear_derived_color_(status == SequenceStatus::TIMEOUT    ? DerivedColorStatus::TIMEOUT
                                : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
                                                                     : DerivedColorStatus::FAILED);
@@ -478,6 +486,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
     this->raw_frame_status_ = RawFrameStatus::MALFORMED;
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+    this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
     this->clear_derived_color_(DerivedColorStatus::MALFORMED);
     this->clear_terminal_frame_state_();
     ESP_LOGW(TAG, "Unable to parse AS7261 raw frame response: %s", this->response_buffer_);
@@ -494,6 +503,7 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
   if (!this->start_calibrated_frame_readout_()) {
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+    this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
     this->clear_derived_color_(DerivedColorStatus::FAILED);
     ESP_LOGW(TAG, "Unable to start AS7261 calibrated frame readout");
   }
@@ -511,6 +521,7 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   };
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::RUNNING;
+  this->clear_calculated_duv_(CalculatedDuvStatus::INVALID);
   this->clear_derived_color_(DerivedColorStatus::INVALID);
   this->sequence_owner_ = SequenceOwner::CALIBRATED_FRAME_READOUT;
   if (this->start_command_sequence_(steps, 3)) {
@@ -520,6 +531,7 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   this->sequence_owner_ = SequenceOwner::NONE;
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+  this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
   this->clear_derived_color_(DerivedColorStatus::FAILED);
   return false;
 }
@@ -536,6 +548,7 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
       ESP_LOGW(TAG, "Unable to parse AS7261 calibrated XYZ response: %s", value == nullptr ? "<empty>" : value);
       this->calibrated_frame_ = CalibratedFrame{};
       this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+      this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
       this->clear_derived_color_(DerivedColorStatus::MALFORMED);
       return false;
     }
@@ -551,6 +564,7 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
              value == nullptr ? "<empty>" : value);
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+    this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
     this->clear_derived_color_(DerivedColorStatus::MALFORMED);
     return false;
   }
@@ -565,6 +579,7 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
 
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+  this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
   this->clear_derived_color_(DerivedColorStatus::MALFORMED);
   return false;
 }
@@ -576,6 +591,9 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
       this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
                                        : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
                                                                             : CalibratedFrameStatus::FAILED;
+      this->clear_calculated_duv_(status == SequenceStatus::TIMEOUT    ? CalculatedDuvStatus::TIMEOUT
+                                  : status == SequenceStatus::OVERFLOW ? CalculatedDuvStatus::OVERFLOW
+                                                                       : CalculatedDuvStatus::FAILED);
       this->clear_derived_color_(status == SequenceStatus::TIMEOUT    ? DerivedColorStatus::TIMEOUT
                                  : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
                                                                       : DerivedColorStatus::FAILED);
@@ -589,10 +607,128 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
   ESP_LOGD(TAG, "AS7261 calibrated frame stored: X=%f Y=%f Z=%f Lux=%f CCT=%f", this->calibrated_frame_.x,
            this->calibrated_frame_.y, this->calibrated_frame_.z, this->calibrated_frame_.lux,
            this->calibrated_frame_.cct);
+  if (!this->derive_calculated_duv_()) {
+    ESP_LOGW(TAG, "AS7261 calculated Duv derivation failed with %s",
+             this->calculated_duv_status_to_string_(this->calculated_duv_status_));
+  }
   if (!this->derive_oklab_oklch_()) {
     ESP_LOGW(TAG, "AS7261 OKLab/OKLCH derivation failed with %s",
              this->derived_color_status_to_string_(this->derived_color_status_));
   }
+}
+
+void AS7261Component::clear_calculated_duv_(CalculatedDuvStatus status) {
+  this->calculated_duv_frame_ = CalculatedDuvFrame{};
+  this->calculated_duv_status_ = status;
+}
+
+bool AS7261Component::derive_calculated_duv_() {
+  if (this->calibrated_frame_status_ != CalibratedFrameStatus::VALID ||
+      !calibrated_frame_valid_for_duv_(this->calibrated_frame_)) {
+    this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
+    return false;
+  }
+
+  Cie1960UcsPoint measured{};
+  Cie1960UcsPoint planckian{};
+  if (!cie1960_uv_from_xyz_(this->calibrated_frame_, &measured) ||
+      !planckian_locus_uv_from_cct_(this->calibrated_frame_.cct, &planckian)) {
+    this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
+    return false;
+  }
+
+  const float delta_u = measured.u - planckian.u;
+  const float delta_v = measured.v - planckian.v;
+  const float distance = std::sqrt((delta_u * delta_u) + (delta_v * delta_v));
+  if (!std::isfinite(distance)) {
+    this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
+    return false;
+  }
+
+  CalculatedDuvFrame calculated{};
+  calculated.measured = measured;
+  calculated.planckian = planckian;
+  // Signed CIE 1960 Duv: positive above the CCT-derived Planckian reference v, negative below it.
+  calculated.duv = delta_v >= 0.0f ? distance : -distance;
+  if (!std::isfinite(calculated.duv)) {
+    this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
+    return false;
+  }
+
+  this->calculated_duv_frame_ = calculated;
+  this->calculated_duv_status_ = CalculatedDuvStatus::VALID;
+  ESP_LOGD(TAG, "AS7261 calculated CIE 1960 Duv stored: Duv=%f u=%f v=%f reference_u=%f reference_v=%f",
+           this->calculated_duv_frame_.duv, this->calculated_duv_frame_.measured.u,
+           this->calculated_duv_frame_.measured.v, this->calculated_duv_frame_.planckian.u,
+           this->calculated_duv_frame_.planckian.v);
+  return true;
+}
+
+bool AS7261Component::calibrated_frame_valid_for_duv_(const CalibratedFrame &frame) {
+  return std::isfinite(frame.x) && std::isfinite(frame.y) && std::isfinite(frame.z) && std::isfinite(frame.cct) &&
+         frame.x >= 0.0f && frame.y >= 0.0f && frame.z >= 0.0f && frame.cct >= PLANCKIAN_LOCUS_MIN_CCT_K &&
+         frame.cct <= PLANCKIAN_LOCUS_MAX_CCT_K;
+}
+
+bool AS7261Component::cie1960_uv_from_xyz_(const CalibratedFrame &frame, Cie1960UcsPoint *point) {
+  if (point == nullptr) {
+    return false;
+  }
+  const float denominator = frame.x + (15.0f * frame.y) + (3.0f * frame.z);
+  if (!std::isfinite(denominator) || denominator <= CIE_1960_UCS_DENOMINATOR_EPSILON) {
+    return false;
+  }
+
+  Cie1960UcsPoint parsed{};
+  parsed.u = (4.0f * frame.x) / denominator;
+  parsed.v = (6.0f * frame.y) / denominator;
+  if (!std::isfinite(parsed.u) || !std::isfinite(parsed.v)) {
+    return false;
+  }
+
+  *point = parsed;
+  return true;
+}
+
+bool AS7261Component::cie1960_uv_from_xy_(float x, float y, Cie1960UcsPoint *point) {
+  if (point == nullptr || !std::isfinite(x) || !std::isfinite(y) || x < 0.0f || y < 0.0f) {
+    return false;
+  }
+  const float denominator = (-2.0f * x) + (12.0f * y) + 3.0f;
+  if (!std::isfinite(denominator) || denominator <= CIE_1960_UCS_DENOMINATOR_EPSILON) {
+    return false;
+  }
+
+  Cie1960UcsPoint parsed{};
+  parsed.u = (4.0f * x) / denominator;
+  parsed.v = (6.0f * y) / denominator;
+  if (!std::isfinite(parsed.u) || !std::isfinite(parsed.v)) {
+    return false;
+  }
+
+  *point = parsed;
+  return true;
+}
+
+bool AS7261Component::planckian_locus_uv_from_cct_(float cct, Cie1960UcsPoint *point) {
+  if (point == nullptr || !std::isfinite(cct) || cct < PLANCKIAN_LOCUS_MIN_CCT_K || cct > PLANCKIAN_LOCUS_MAX_CCT_K) {
+    return false;
+  }
+
+  const float inverse_cct = 1.0f / cct;
+  const float inverse_cct2 = inverse_cct * inverse_cct;
+  const float inverse_cct3 = inverse_cct2 * inverse_cct;
+  const float x =
+      cct <= PLANCKIAN_LOCUS_MID_CCT_K
+          ? (-0.2661239e9f * inverse_cct3) - (0.2343580e6f * inverse_cct2) + (0.8776956e3f * inverse_cct) + 0.179910f
+          : (-3.0258469e9f * inverse_cct3) + (2.1070379e6f * inverse_cct2) + (0.2226347e3f * inverse_cct) + 0.240390f;
+  const float x2 = x * x;
+  const float x3 = x2 * x;
+  const float y =
+      cct <= PLANCKIAN_LOCUS_LOW_CCT_K   ? (-1.1063814f * x3) - (1.34811020f * x2) + (2.18555832f * x) - 0.20219683f
+      : cct <= PLANCKIAN_LOCUS_MID_CCT_K ? (-0.9549476f * x3) - (1.37418593f * x2) + (2.09137015f * x) - 0.16748867f
+                                         : (3.0817580f * x3) - (5.87338670f * x2) + (3.75112997f * x) - 0.37001483f;
+  return cie1960_uv_from_xy_(x, y, point);
 }
 
 void AS7261Component::clear_derived_color_(DerivedColorStatus status) {
@@ -1370,6 +1506,25 @@ const char *AS7261Component::calibrated_frame_status_to_string_(CalibratedFrameS
     case CalibratedFrameStatus::OVERFLOW:
       return "overflow";
     case CalibratedFrameStatus::MALFORMED:
+      return "malformed";
+    default:
+      return "unknown";
+  }
+}
+
+const char *AS7261Component::calculated_duv_status_to_string_(CalculatedDuvStatus status) {
+  switch (status) {
+    case CalculatedDuvStatus::INVALID:
+      return "invalid";
+    case CalculatedDuvStatus::VALID:
+      return "valid";
+    case CalculatedDuvStatus::FAILED:
+      return "failed";
+    case CalculatedDuvStatus::TIMEOUT:
+      return "timeout";
+    case CalculatedDuvStatus::OVERFLOW:
+      return "overflow";
+    case CalculatedDuvStatus::MALFORMED:
       return "malformed";
     default:
       return "unknown";
