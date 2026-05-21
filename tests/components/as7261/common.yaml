@@ -38,6 +38,8 @@ sensor:
       name: AS7261 OKLCH C
     oklch_h:
       name: AS7261 OKLCH h
+    completed_measurement_count:
+      name: AS7261 Completed Measurement Count
 
   - platform: as7261
     as7261_id: as7261_sensor

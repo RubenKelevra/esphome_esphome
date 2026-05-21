@@ -44,6 +44,7 @@ void AS7261Component::dump_config() {
   LOG_SENSOR("  ", "OKLCH L", this->oklch_l_sensor_);
   LOG_SENSOR("  ", "OKLCH C", this->oklch_c_sensor_);
   LOG_SENSOR("  ", "OKLCH h", this->oklch_h_sensor_);
+  LOG_SENSOR("  ", "Completed measurement count", this->completed_measurement_count_sensor_);
   LOG_SENSOR("  ", "Device temperature", this->device_temperature_sensor_);
   LOG_SENSOR("  ", "Vendor CIE 1976 DUV", this->duv_cie1976_sensor_);
   LOG_SENSOR("  ", "Near-IR percent", this->near_ir_percent_sensor_);
@@ -80,6 +81,8 @@ void AS7261Component::request_manual_measurement() {
     ESP_LOGW(TAG, "Dropping AS7261 manual measurement request because the component is busy");
     return;
   }
+  this->active_measurement_manual_ = true;
+  this->active_measurement_counted_ = false;
   if (!this->start_measurement_cycle_()) {
     ESP_LOGW(TAG, "Unable to start AS7261 manual measurement");
     this->publish_nan_default_measurement_outputs_();
@@ -878,6 +881,7 @@ void AS7261Component::publish_default_measurement_outputs_() {
         std::isfinite(this->derived_color_frame_.oklch.h) ? this->derived_color_frame_.oklch.h : NAN);
   }
 #endif
+  this->publish_manual_measurement_completion_();
 }
 
 void AS7261Component::publish_nan_default_measurement_outputs_() {
@@ -908,6 +912,21 @@ void AS7261Component::publish_nan_default_measurement_outputs_() {
   }
   if (this->oklch_h_sensor_ != nullptr) {
     this->oklch_h_sensor_->publish_state(NAN);
+  }
+#endif
+  this->publish_manual_measurement_completion_();
+}
+
+void AS7261Component::publish_manual_measurement_completion_() {
+  if (!this->active_measurement_manual_ || this->active_measurement_counted_) {
+    return;
+  }
+  this->active_measurement_counted_ = true;
+  this->active_measurement_manual_ = false;
+  this->completed_measurement_count_++;
+#ifdef USE_SENSOR
+  if (this->completed_measurement_count_sensor_ != nullptr) {
+    this->completed_measurement_count_sensor_->publish_state(static_cast<float>(this->completed_measurement_count_));
   }
 #endif
 }

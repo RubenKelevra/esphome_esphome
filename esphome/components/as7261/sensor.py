@@ -22,6 +22,7 @@ DEPENDENCIES = ["as7261"]
 
 CONF_CALCULATED_DUV = "calculated_duv"
 CONF_CCT = "cct"
+CONF_COMPLETED_MEASUREMENT_COUNT = "completed_measurement_count"
 CONF_DEVICE_TEMPERATURE = "device_temperature"
 CONF_DUV_CIE1976 = "duv_cie1976"
 CONF_LUX = "lux"
@@ -97,6 +98,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_OKLCH_L): unitless_schema,
         cv.Optional(CONF_OKLCH_C): unitless_schema,
         cv.Optional(CONF_OKLCH_H): unitless_schema,
+        cv.Optional(CONF_COMPLETED_MEASUREMENT_COUNT): diagnostic_counts_schema,
         cv.Optional(CONF_DEVICE_TEMPERATURE): diagnostic_schema(
             sensor.sensor_schema(
                 unit_of_measurement=UNIT_CELSIUS,
@@ -134,6 +136,7 @@ SENSORS = {
     CONF_OKLCH_L: "set_oklch_l_sensor",
     CONF_OKLCH_C: "set_oklch_c_sensor",
     CONF_OKLCH_H: "set_oklch_h_sensor",
+    CONF_COMPLETED_MEASUREMENT_COUNT: "set_completed_measurement_count_sensor",
     CONF_DEVICE_TEMPERATURE: "set_device_temperature_sensor",
     CONF_DUV_CIE1976: "set_duv_cie1976_sensor",
     CONF_NEAR_IR_PERCENT: "set_near_ir_percent_sensor",

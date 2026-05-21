@@ -36,6 +36,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   SUB_SENSOR(oklch_l)
   SUB_SENSOR(oklch_c)
   SUB_SENSOR(oklch_h)
+  SUB_SENSOR(completed_measurement_count)
   SUB_SENSOR(device_temperature)
   SUB_SENSOR(duv_cie1976)
   SUB_SENSOR(near_ir_percent)
@@ -306,6 +307,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool default_measurement_outputs_publishable_() const;
   void publish_default_measurement_outputs_();
   void publish_nan_default_measurement_outputs_();
+  void publish_manual_measurement_completion_();
   bool derive_calculated_duv_();
   bool derive_oklab_oklch_();
   static bool calibrated_frame_valid_for_duv_(const CalibratedFrame &frame);
@@ -395,6 +397,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool device_temperature_valid_{false};
   bool device_temperature_invalid_{false};
   bool device_temperature_unsafe_{false};
+  bool active_measurement_manual_{false};
+  bool active_measurement_counted_{false};
+  uint32_t completed_measurement_count_{0};
   bool precision_mode_{false};
   bool manual_exposure_{false};
   AS7261Gain gain_{AS7261_GAIN_16X};

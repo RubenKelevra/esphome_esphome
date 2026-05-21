@@ -38,3 +38,5 @@ sensor:
       name: AS7261 Manual Only OKLCH C
     oklch_h:
       name: AS7261 Manual Only OKLCH h
+    completed_measurement_count:
+      name: AS7261 Manual Only Completed Measurement Count
