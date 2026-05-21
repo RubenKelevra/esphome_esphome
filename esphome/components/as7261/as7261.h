@@ -59,6 +59,14 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     FAILED,
   };
 
+  enum class AutoExposureCommandState : uint8_t {
+    NOT_CONFIGURED,
+    PENDING,
+    RUNNING,
+    APPLIED,
+    FAILED,
+  };
+
  public:
   void setup() override;
   void dump_config() override;
@@ -116,6 +124,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     NONE,
     DIAGNOSTIC_READOUT,
     MANUAL_EXPOSURE,
+    AUTO_EXPOSURE,
     FRAME_TRIGGER,
     RAW_FRAME_READOUT,
     CALIBRATED_FRAME_READOUT,
@@ -245,8 +254,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   struct AutoExposurePolicy {
     AutoExposureCandidate current_candidate;
     AutoExposureCandidate next_candidate;
+    AutoExposureCandidate applied_candidate;
     AutoExposurePolicyAction action;
     bool candidate_initialized;
+    bool candidate_applied;
     bool accepted;
     bool dark_channel_recovery_required;
     bool clamped;
@@ -328,6 +339,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void finish_command_sequence_(SequenceStatus status);
   bool start_diagnostic_readout_();
   bool start_manual_exposure_commands_();
+  bool start_auto_exposure_candidate_commands_();
   bool start_one_shot_frame_trigger_();
   bool start_raw_frame_readout_();
   bool start_calibrated_frame_readout_();
@@ -345,8 +357,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void clear_auto_exposure_policy_();
   void initialize_auto_exposure_policy_();
   bool update_auto_exposure_policy_();
+  bool auto_exposure_candidate_applied_() const;
   AutoExposureAdjustment scale_auto_exposure_candidate_(AutoExposureCandidate candidate, float multiplier) const;
   static AutoExposureCandidate normalize_auto_exposure_candidate_(AutoExposureCandidate candidate);
+  static bool auto_exposure_candidates_equal_(AutoExposureCandidate lhs, AutoExposureCandidate rhs);
   static uint8_t clamp_auto_exposure_integration_time_(float integration_time);
   bool default_measurement_outputs_publishable_() const;
   void publish_default_measurement_outputs_();
@@ -363,6 +377,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool frame_int_ready_() const;
   uint32_t calculate_frame_watchdog_timeout_ms_() const;
   void handle_finished_manual_exposure_commands_(SequenceStatus status);
+  void handle_finished_auto_exposure_candidate_commands_(SequenceStatus status);
   void handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result);
   void handle_firmware_version_response_();
   void handle_device_temperature_response_();
@@ -415,6 +430,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   DiagnosticState diagnostic_state_{DiagnosticState::IDLE};
   SequenceStatus sequence_status_{SequenceStatus::IDLE};
   ManualExposureCommandState manual_exposure_state_{ManualExposureCommandState::NOT_CONFIGURED};
+  AutoExposureCommandState auto_exposure_state_{AutoExposureCommandState::NOT_CONFIGURED};
   SequenceOwner sequence_owner_{SequenceOwner::NONE};
   FrameState frame_state_{FrameState::IDLE};
   CommandSequenceStep command_sequence_[COMMAND_SEQUENCE_LENGTH]{};
@@ -428,6 +444,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   size_t line_length_{0};
   char response_buffer_[RESPONSE_BUFFER_LENGTH]{};
   char manual_exposure_commands_[2][COMMAND_BUFFER_LENGTH]{};
+  char auto_exposure_commands_[2][COMMAND_BUFFER_LENGTH]{};
   size_t response_length_{0};
   uint32_t frame_wait_started_millis_{0};
   uint32_t frame_watchdog_timeout_ms_{0};

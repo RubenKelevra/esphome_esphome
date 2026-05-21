@@ -104,6 +104,9 @@ bool AS7261Component::start_measurement_cycle_() {
   if (this->manual_exposure_state_ == ManualExposureCommandState::PENDING) {
     return this->start_manual_exposure_commands_();
   }
+  if (!this->manual_exposure_ && !this->auto_exposure_candidate_applied_()) {
+    return this->start_auto_exposure_candidate_commands_();
+  }
 
   return this->start_diagnostic_readout_();
 }
@@ -267,6 +270,9 @@ void AS7261Component::finish_command_sequence_(SequenceStatus status) {
     case SequenceOwner::MANUAL_EXPOSURE:
       this->handle_finished_manual_exposure_commands_(status);
       break;
+    case SequenceOwner::AUTO_EXPOSURE:
+      this->handle_finished_auto_exposure_candidate_commands_(status);
+      break;
     case SequenceOwner::FRAME_TRIGGER:
       this->handle_finished_frame_trigger_(status);
       break;
@@ -325,6 +331,77 @@ void AS7261Component::handle_finished_manual_exposure_commands_(SequenceStatus s
   this->manual_exposure_state_ = ManualExposureCommandState::FAILED;
   this->publish_nan_default_measurement_outputs_();
   ESP_LOGW(TAG, "AS7261 manual exposure commands failed with %s", this->sequence_status_to_string_(status));
+}
+
+bool AS7261Component::start_auto_exposure_candidate_commands_() {
+  if (this->manual_exposure_ || this->component_busy_()) {
+    return false;
+  }
+
+  this->initialize_auto_exposure_policy_();
+  AutoExposurePolicy &policy = this->auto_exposure_policy_;
+  if (!policy.candidate_initialized) {
+    this->auto_exposure_state_ = AutoExposureCommandState::FAILED;
+    return false;
+  }
+
+  policy.current_candidate = normalize_auto_exposure_candidate_(policy.current_candidate);
+  if (this->auto_exposure_candidate_applied_()) {
+    this->auto_exposure_state_ = AutoExposureCommandState::APPLIED;
+    return this->start_diagnostic_readout_();
+  }
+
+  const int gain_command_length =
+      std::snprintf(this->auto_exposure_commands_[0], COMMAND_BUFFER_LENGTH, "ATGAIN=%u",
+                    static_cast<unsigned>(gain_to_at_value_(policy.current_candidate.gain)));
+  const int integration_time_command_length =
+      std::snprintf(this->auto_exposure_commands_[1], COMMAND_BUFFER_LENGTH, "ATINTTIME=%u",
+                    static_cast<unsigned>(policy.current_candidate.integration_time));
+  if (gain_command_length <= 0 || gain_command_length >= static_cast<int>(COMMAND_BUFFER_LENGTH) ||
+      integration_time_command_length <= 0 ||
+      integration_time_command_length >= static_cast<int>(COMMAND_BUFFER_LENGTH)) {
+    this->auto_exposure_state_ = AutoExposureCommandState::FAILED;
+    policy.candidate_applied = false;
+    return false;
+  }
+
+  const CommandSequenceStep steps[] = {
+      {this->auto_exposure_commands_[0], DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {this->auto_exposure_commands_[1], DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  this->auto_exposure_state_ = AutoExposureCommandState::RUNNING;
+  this->sequence_owner_ = SequenceOwner::AUTO_EXPOSURE;
+  if (this->start_command_sequence_(steps, 2)) {
+    return true;
+  }
+
+  this->auto_exposure_state_ = AutoExposureCommandState::FAILED;
+  this->sequence_owner_ = SequenceOwner::NONE;
+  policy.candidate_applied = false;
+  return false;
+}
+
+void AS7261Component::handle_finished_auto_exposure_candidate_commands_(SequenceStatus status) {
+  AutoExposurePolicy &policy = this->auto_exposure_policy_;
+  if (status == SequenceStatus::COMPLETED) {
+    policy.current_candidate = normalize_auto_exposure_candidate_(policy.current_candidate);
+    policy.applied_candidate = policy.current_candidate;
+    policy.candidate_applied = true;
+    this->auto_exposure_state_ = AutoExposureCommandState::APPLIED;
+    ESP_LOGD(TAG, "AS7261 auto exposure candidate applied: gain %u int %u",
+             static_cast<unsigned>(gain_to_at_value_(policy.applied_candidate.gain)),
+             static_cast<unsigned>(policy.applied_candidate.integration_time));
+    if (!this->start_diagnostic_readout_()) {
+      ESP_LOGW(TAG, "Unable to resume AS7261 measurement after auto exposure candidate application");
+      this->publish_nan_default_measurement_outputs_();
+    }
+    return;
+  }
+
+  this->auto_exposure_state_ = AutoExposureCommandState::FAILED;
+  policy.candidate_applied = false;
+  this->publish_nan_default_measurement_outputs_();
+  ESP_LOGW(TAG, "AS7261 auto exposure candidate commands failed with %s", this->sequence_status_to_string_(status));
 }
 
 bool AS7261Component::start_diagnostic_readout_() {
@@ -610,7 +687,10 @@ bool AS7261Component::assess_clear_channel_exposure_() {
   return true;
 }
 
-void AS7261Component::clear_auto_exposure_policy_() { this->auto_exposure_policy_ = AutoExposurePolicy{}; }
+void AS7261Component::clear_auto_exposure_policy_() {
+  this->auto_exposure_policy_ = AutoExposurePolicy{};
+  this->auto_exposure_state_ = AutoExposureCommandState::NOT_CONFIGURED;
+}
 
 void AS7261Component::initialize_auto_exposure_policy_() {
   if (this->manual_exposure_ || this->auto_exposure_policy_.candidate_initialized) {
@@ -622,6 +702,8 @@ void AS7261Component::initialize_auto_exposure_policy_() {
   this->auto_exposure_policy_.next_candidate = candidate;
   this->auto_exposure_policy_.action = AutoExposurePolicyAction::PENDING_ASSESSMENT;
   this->auto_exposure_policy_.candidate_initialized = true;
+  this->auto_exposure_policy_.candidate_applied = false;
+  this->auto_exposure_state_ = AutoExposureCommandState::PENDING;
 }
 
 bool AS7261Component::update_auto_exposure_policy_() {
@@ -632,6 +714,11 @@ bool AS7261Component::update_auto_exposure_policy_() {
   this->initialize_auto_exposure_policy_();
   AutoExposurePolicy &policy = this->auto_exposure_policy_;
   policy.current_candidate = normalize_auto_exposure_candidate_(policy.current_candidate);
+  if (policy.candidate_applied &&
+      !auto_exposure_candidates_equal_(policy.current_candidate, policy.applied_candidate)) {
+    policy.candidate_applied = false;
+    this->auto_exposure_state_ = AutoExposureCommandState::PENDING;
+  }
   policy.next_candidate = policy.current_candidate;
   policy.accepted = false;
   policy.dark_channel_recovery_required = false;
@@ -683,6 +770,15 @@ bool AS7261Component::update_auto_exposure_policy_() {
            static_cast<unsigned>(policy.next_candidate.integration_time),
            policy.dark_channel_recovery_required ? ", dark recovery required" : "", policy.clamped ? ", clamped" : "");
   return true;
+}
+
+bool AS7261Component::auto_exposure_candidate_applied_() const {
+  if (this->manual_exposure_ || !this->auto_exposure_policy_.candidate_initialized ||
+      !this->auto_exposure_policy_.candidate_applied) {
+    return false;
+  }
+  return auto_exposure_candidates_equal_(this->auto_exposure_policy_.current_candidate,
+                                         this->auto_exposure_policy_.applied_candidate);
 }
 
 AS7261Component::AutoExposureAdjustment AS7261Component::scale_auto_exposure_candidate_(AutoExposureCandidate candidate,
@@ -769,6 +865,12 @@ AS7261Component::AutoExposureCandidate AS7261Component::normalize_auto_exposure_
   }
   candidate.integration_time = clamp_auto_exposure_integration_time_(static_cast<float>(candidate.integration_time));
   return candidate;
+}
+
+bool AS7261Component::auto_exposure_candidates_equal_(AutoExposureCandidate lhs, AutoExposureCandidate rhs) {
+  lhs = normalize_auto_exposure_candidate_(lhs);
+  rhs = normalize_auto_exposure_candidate_(rhs);
+  return lhs.gain == rhs.gain && lhs.integration_time == rhs.integration_time;
 }
 
 uint8_t AS7261Component::clamp_auto_exposure_integration_time_(float integration_time) {
