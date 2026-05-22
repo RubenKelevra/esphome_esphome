@@ -18,7 +18,7 @@
 
 namespace esphome::as7261 {
 
-enum AS7261Gain {
+enum AS7261Gain : uint8_t {
   AS7261_GAIN_1X,
   AS7261_GAIN_3_7X,
   AS7261_GAIN_16X,

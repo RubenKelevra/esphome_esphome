@@ -1,5 +1,6 @@
 #include "as7261.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -163,7 +164,7 @@ void AS7261Component::poll_transport_() {
   }
 
   while (this->available() > 0) {
-    uint8_t byte;
+    uint8_t byte = 0;
     if (!this->read_byte(&byte)) {
       break;
     }
@@ -1200,8 +1201,10 @@ bool AS7261Component::auto_exposure_candidate_applied_() const {
 bool AS7261Component::auto_exposure_candidate_lower_(AutoExposureCandidate candidate, AutoExposureCandidate baseline) {
   candidate = normalize_auto_exposure_candidate_(candidate);
   baseline = normalize_auto_exposure_candidate_(baseline);
-  const float candidate_exposure = auto_exposure_gain_multiplier_(candidate.gain) * candidate.integration_time;
-  const float baseline_exposure = auto_exposure_gain_multiplier_(baseline.gain) * baseline.integration_time;
+  const float candidate_exposure =
+      auto_exposure_gain_multiplier_(candidate.gain) * static_cast<float>(candidate.integration_time);
+  const float baseline_exposure =
+      auto_exposure_gain_multiplier_(baseline.gain) * static_cast<float>(baseline.integration_time);
   return std::isfinite(candidate_exposure) && std::isfinite(baseline_exposure) &&
          candidate_exposure < baseline_exposure;
 }
@@ -1874,7 +1877,8 @@ uint32_t AS7261Component::calculate_frame_watchdog_timeout_ms_() const {
                                        ? this->integration_time_
                                        : AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
   const uint32_t conversion_time_us = 2UL * static_cast<uint32_t>(integration_time) * AS7261_INTEGRATION_TIME_STEP_US;
-  return ((conversion_time_us + 999UL) / 1000UL) + FRAME_WATCHDOG_MARGIN_MS;
+  const uint32_t conversion_time_ms = (conversion_time_us + 999U) / 1000U;
+  return conversion_time_ms + FRAME_WATCHDOG_MARGIN_MS;
 }
 
 uint8_t AS7261Component::single_bank_probe_integration_time_() const {
@@ -1895,13 +1899,10 @@ uint8_t AS7261Component::calculate_single_bank_probe_interval_() const {
   if (integration_time_us == 0) {
     return 1;
   }
-  uint32_t interval = (SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US + integration_time_us - 1UL) / integration_time_us;
-  if (interval < 1UL) {
-    interval = 1UL;
-  }
-  if (interval > 255UL) {
-    interval = 255UL;
-  }
+  uint32_t interval =
+      (SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US + integration_time_us - 1U) / integration_time_us;
+  interval = std::max<uint32_t>(interval, 1U);
+  interval = std::min<uint32_t>(interval, 255U);
   return static_cast<uint8_t>(interval);
 }
 
@@ -1911,7 +1912,8 @@ uint32_t AS7261Component::calculate_single_bank_probe_watchdog_timeout_ms_() con
   const uint32_t conversion_time_us = integration_time_us > SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US
                                           ? integration_time_us
                                           : SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US;
-  return ((conversion_time_us + 999UL) / 1000UL) + FRAME_WATCHDOG_MARGIN_MS;
+  const uint32_t conversion_time_ms = (conversion_time_us + 999U) / 1000U;
+  return conversion_time_ms + FRAME_WATCHDOG_MARGIN_MS;
 }
 
 void AS7261Component::handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result) {
@@ -1949,7 +1951,7 @@ void AS7261Component::handle_device_temperature_response_() {
   const char *const value = this->first_response_value_();
   int16_t temperature_c = 0;
   bool invalid = false;
-  if (!this->parse_device_temperature_(value, &temperature_c, &invalid)) {
+  if (!AS7261Component::parse_device_temperature_(value, &temperature_c, &invalid)) {
     ESP_LOGW(TAG, "Unable to parse AS7261 device temperature response: %s", value == nullptr ? "<empty>" : value);
     this->device_temperature_valid_ = false;
     this->device_temperature_invalid_ = false;
@@ -2016,7 +2018,7 @@ void AS7261Component::finish_response_line_() {
     return;
   }
 
-  const char *const line_begin = this->trim_left_(this->line_buffer_);
+  const char *const line_begin = AS7261Component::trim_left_(this->line_buffer_);
   if (std::strncmp(line_begin, "ERROR", 5) == 0) {
     if (!this->append_response_line_(line_begin)) {
       this->line_length_ = 0;
@@ -2038,17 +2040,17 @@ void AS7261Component::finish_response_line_() {
 
 bool AS7261Component::finish_response_line_with_terminal_(const char *terminal, TransportResult result) {
   const size_t terminal_length = std::strlen(terminal);
-  const char *const line_begin = this->trim_left_(this->line_buffer_);
-  const char *const line_end = this->trim_right_(line_begin, line_begin + std::strlen(line_begin));
+  const char *const line_begin = AS7261Component::trim_left_(this->line_buffer_);
+  const char *const line_end = AS7261Component::trim_right_(line_begin, line_begin + std::strlen(line_begin));
   if (line_end < line_begin + terminal_length ||
       std::strncmp(line_end - terminal_length, terminal, terminal_length) != 0) {
     return false;
   }
-  if (line_end != line_begin + terminal_length && !this->is_space_(*(line_end - terminal_length - 1))) {
+  if (line_end != line_begin + terminal_length && !AS7261Component::is_space_(*(line_end - terminal_length - 1))) {
     return false;
   }
 
-  const char *const value_end = this->trim_right_(line_begin, line_end - terminal_length);
+  const char *const value_end = AS7261Component::trim_right_(line_begin, line_end - terminal_length);
   if (value_end > line_begin) {
     char value_line[LINE_BUFFER_LENGTH];
     const size_t value_length = static_cast<size_t>(value_end - line_begin);
@@ -2139,7 +2141,7 @@ void AS7261Component::drain_uart_() {
 }
 
 const char *AS7261Component::first_response_value_() {
-  const char *const begin = this->trim_left_(this->response_buffer_);
+  const char *const begin = AS7261Component::trim_left_(this->response_buffer_);
   if (begin == nullptr) {
     this->line_buffer_[0] = '\0';
     return this->line_buffer_;
@@ -2149,7 +2151,7 @@ const char *AS7261Component::first_response_value_() {
   while (*line_end != '\0' && *line_end != '\n') {
     line_end++;
   }
-  const char *const end = this->trim_right_(begin, line_end);
+  const char *const end = AS7261Component::trim_right_(begin, line_end);
   const size_t length = static_cast<size_t>(end - begin);
   if (length == 0 || length >= LINE_BUFFER_LENGTH) {
     this->line_buffer_[0] = '\0';
@@ -2275,7 +2277,7 @@ bool AS7261Component::parse_unsigned_u16_(const char *begin, const char *end, ui
     if (digit < 0) {
       return false;
     }
-    parsed = (parsed * 10UL) + static_cast<uint8_t>(digit);
+    parsed = (parsed * 10U) + static_cast<uint32_t>(digit);
     if (parsed > 0xFFFFUL) {
       return false;
     }
@@ -2424,9 +2426,7 @@ bool AS7261Component::parse_finite_float_(const char *begin, const char *end, fl
     while (cursor < end && *cursor >= '0' && *cursor <= '9') {
       if (exponent < 64) {
         exponent = static_cast<int16_t>((exponent * 10) + (*cursor - '0'));
-        if (exponent > 64) {
-          exponent = 64;
-        }
+        exponent = std::min<int16_t>(exponent, 64);
       }
       cursor++;
     }
