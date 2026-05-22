@@ -920,7 +920,42 @@ bool AS7261Component::assess_clear_channel_exposure_(const RawFrame &frame, bool
            this->exposure_assessment_.clear_percent,
            exposure_assessment_status_to_string_(this->exposure_assessment_.status),
            exposure_assessment_guidance_to_string_(this->exposure_assessment_.guidance));
+  this->learn_dark_channel_recovery_(frame, this->exposure_assessment_);
   return true;
+}
+
+void AS7261Component::learn_dark_channel_recovery_(const RawFrame &frame, const ExposureAssessment &assessment) {
+  if (this->manual_exposure_ || assessment.status != ExposureAssessmentStatus::CLEAR_TARGET ||
+      !std::isfinite(assessment.clear_percent) || assessment.clear_percent <= 0.0f || frame.clear == 0 ||
+      frame.dark == 0) {
+    return;
+  }
+
+  const float dark_percent = (CLEAR_PERCENT_SCALE * static_cast<float>(frame.dark)) / RAW_CLEAR_FULL_SCALE;
+  if (!std::isfinite(dark_percent) || dark_percent <= 0.0f || dark_percent >= CLEAR_OVEREXPOSED_PERCENT) {
+    return;
+  }
+
+  const float ratio = static_cast<float>(frame.dark) / static_cast<float>(frame.clear);
+  if (!std::isfinite(ratio) || ratio < DARK_CHANNEL_RECOVERY_MIN_RATIO || ratio > DARK_CHANNEL_RECOVERY_MAX_RATIO) {
+    return;
+  }
+
+  this->dark_channel_recovery_state_.dark_to_clear_ratio = ratio;
+  this->dark_channel_recovery_state_.learned_at_millis = millis();
+  this->dark_channel_recovery_state_.learned = true;
+  ESP_LOGD(TAG, "AS7261 dark-channel recovery state learned from target exposure");
+}
+
+bool AS7261Component::dark_channel_recovery_state_valid_() const {
+  const DarkChannelRecoveryState &state = this->dark_channel_recovery_state_;
+  if (!state.learned || !std::isfinite(state.dark_to_clear_ratio) ||
+      state.dark_to_clear_ratio < DARK_CHANNEL_RECOVERY_MIN_RATIO ||
+      state.dark_to_clear_ratio > DARK_CHANNEL_RECOVERY_MAX_RATIO) {
+    return false;
+  }
+
+  return millis() - state.learned_at_millis <= DARK_CHANNEL_RECOVERY_STATE_MAX_AGE_MS;
 }
 
 void AS7261Component::clear_auto_exposure_policy_() {
@@ -987,8 +1022,15 @@ void AS7261Component::handle_finished_auto_exposure_probe_() {
     return;
   }
 
-  if (policy.dark_channel_recovery_required ||
-      auto_exposure_candidates_equal_(policy.current_candidate, policy.next_candidate) ||
+  if (policy.dark_channel_recovery_required) {
+    if (this->auto_exposure_convergence_attempts_ >= AUTO_EXPOSURE_CONVERGENCE_ATTEMPT_LIMIT ||
+        !this->recover_auto_exposure_from_dark_channel_()) {
+      this->fail_auto_exposure_convergence_();
+      return;
+    }
+  }
+
+  if (auto_exposure_candidates_equal_(policy.current_candidate, policy.next_candidate) ||
       this->auto_exposure_convergence_attempts_ >= AUTO_EXPOSURE_CONVERGENCE_ATTEMPT_LIMIT) {
     this->fail_auto_exposure_convergence_();
     return;
@@ -1093,6 +1135,55 @@ bool AS7261Component::update_auto_exposure_policy_() {
   return true;
 }
 
+bool AS7261Component::recover_auto_exposure_from_dark_channel_() {
+  if (this->manual_exposure_ || this->single_bank_probe_status_ != SingleBankProbeStatus::VALID ||
+      !this->dark_channel_recovery_state_valid_()) {
+    return false;
+  }
+
+  AutoExposurePolicy &policy = this->auto_exposure_policy_;
+  if (!policy.candidate_initialized || !policy.dark_channel_recovery_required ||
+      policy.action != AutoExposurePolicyAction::RECOVER_OVEREXPOSED) {
+    return false;
+  }
+
+  const RawFrame &frame = this->single_bank_probe_raw_frame_;
+  if (frame.dark == 0) {
+    return false;
+  }
+
+  const float dark_percent = (CLEAR_PERCENT_SCALE * static_cast<float>(frame.dark)) / RAW_CLEAR_FULL_SCALE;
+  if (!std::isfinite(dark_percent) || dark_percent <= 0.0f ||
+      dark_percent >= DARK_CHANNEL_RECOVERY_CURRENT_DARK_MAX_PERCENT) {
+    return false;
+  }
+
+  const float estimated_clear_percent = dark_percent / this->dark_channel_recovery_state_.dark_to_clear_ratio;
+  if (!std::isfinite(estimated_clear_percent) || estimated_clear_percent <= AUTO_EXPOSURE_TARGET_CLEAR_PERCENT) {
+    return false;
+  }
+
+  const float multiplier = AUTO_EXPOSURE_TARGET_CLEAR_PERCENT / estimated_clear_percent;
+  if (!std::isfinite(multiplier) || multiplier <= 0.0f || multiplier >= 1.0f) {
+    return false;
+  }
+
+  const AutoExposureCandidate baseline = normalize_auto_exposure_candidate_(policy.current_candidate);
+  const AutoExposureAdjustment adjustment = this->scale_auto_exposure_candidate_(baseline, multiplier);
+  if (!auto_exposure_candidate_lower_(adjustment.candidate, baseline)) {
+    return false;
+  }
+
+  policy.next_candidate = normalize_auto_exposure_candidate_(adjustment.candidate);
+  policy.dark_channel_recovery_required = false;
+  policy.clamped = adjustment.clamped;
+  ESP_LOGD(TAG, "AS7261 dark-channel recovery selected lower candidate: gain %u int %u -> gain %u int %u%s",
+           static_cast<unsigned>(gain_to_at_value_(baseline.gain)), static_cast<unsigned>(baseline.integration_time),
+           static_cast<unsigned>(gain_to_at_value_(policy.next_candidate.gain)),
+           static_cast<unsigned>(policy.next_candidate.integration_time), policy.clamped ? ", clamped" : "");
+  return true;
+}
+
 bool AS7261Component::auto_exposure_candidate_applied_() const {
   if (this->manual_exposure_ || !this->auto_exposure_policy_.candidate_initialized ||
       !this->auto_exposure_policy_.candidate_applied) {
@@ -1100,6 +1191,15 @@ bool AS7261Component::auto_exposure_candidate_applied_() const {
   }
   return auto_exposure_candidates_equal_(this->auto_exposure_policy_.current_candidate,
                                          this->auto_exposure_policy_.applied_candidate);
+}
+
+bool AS7261Component::auto_exposure_candidate_lower_(AutoExposureCandidate candidate, AutoExposureCandidate baseline) {
+  candidate = normalize_auto_exposure_candidate_(candidate);
+  baseline = normalize_auto_exposure_candidate_(baseline);
+  const float candidate_exposure = auto_exposure_gain_multiplier_(candidate.gain) * candidate.integration_time;
+  const float baseline_exposure = auto_exposure_gain_multiplier_(baseline.gain) * baseline.integration_time;
+  return std::isfinite(candidate_exposure) && std::isfinite(baseline_exposure) &&
+         candidate_exposure < baseline_exposure;
 }
 
 AS7261Component::AutoExposureAdjustment AS7261Component::scale_auto_exposure_candidate_(AutoExposureCandidate candidate,

@@ -279,6 +279,12 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     bool clamped;
   };
 
+  struct DarkChannelRecoveryState {
+    float dark_to_clear_ratio;
+    uint32_t learned_at_millis;
+    bool learned;
+  };
+
   struct AutoExposurePolicy {
     AutoExposureCandidate current_candidate;
     AutoExposureCandidate next_candidate;
@@ -350,6 +356,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   // Fixed private bound: initial fallback probe plus four correction probes. This keeps auto mode finite
   // without exposing retry tuning through the public YAML contract.
   static constexpr uint8_t AUTO_EXPOSURE_CONVERGENCE_ATTEMPT_LIMIT = 5;
+  static constexpr uint32_t DARK_CHANNEL_RECOVERY_STATE_MAX_AGE_MS = 300000;
+  static constexpr float DARK_CHANNEL_RECOVERY_MIN_RATIO = 1.0e-6f;
+  static constexpr float DARK_CHANNEL_RECOVERY_MAX_RATIO = 1.0f;
+  static constexpr float DARK_CHANNEL_RECOVERY_CURRENT_DARK_MAX_PERCENT = CLEAR_OVEREXPOSED_PERCENT;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
@@ -398,6 +408,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void clear_exposure_assessment_();
   bool assess_clear_channel_exposure_();
   bool assess_clear_channel_exposure_(const RawFrame &frame, bool frame_valid);
+  void learn_dark_channel_recovery_(const RawFrame &frame, const ExposureAssessment &assessment);
+  bool dark_channel_recovery_state_valid_() const;
   void clear_auto_exposure_policy_();
   bool start_auto_exposure_convergence_();
   bool start_auto_exposure_probe_attempt_();
@@ -405,7 +417,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void fail_auto_exposure_convergence_();
   void initialize_auto_exposure_policy_();
   bool update_auto_exposure_policy_();
+  bool recover_auto_exposure_from_dark_channel_();
   bool auto_exposure_candidate_applied_() const;
+  static bool auto_exposure_candidate_lower_(AutoExposureCandidate candidate, AutoExposureCandidate baseline);
   AutoExposureAdjustment scale_auto_exposure_candidate_(AutoExposureCandidate candidate, float multiplier) const;
   static AutoExposureCandidate normalize_auto_exposure_candidate_(AutoExposureCandidate candidate);
   static bool auto_exposure_candidates_equal_(AutoExposureCandidate lhs, AutoExposureCandidate rhs);
@@ -521,6 +535,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   DerivedColorStatus derived_color_status_{DerivedColorStatus::INVALID};
   ExposureAssessment exposure_assessment_{};
   AutoExposurePolicy auto_exposure_policy_{};
+  DarkChannelRecoveryState dark_channel_recovery_state_{};
   int16_t last_device_temperature_c_{0};
   bool device_temperature_valid_{false};
   bool device_temperature_invalid_{false};
