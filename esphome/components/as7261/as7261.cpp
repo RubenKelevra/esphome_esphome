@@ -96,6 +96,10 @@ void AS7261Component::request_manual_measurement() {
 }
 
 bool AS7261Component::start_measurement_cycle_() {
+  if (this->precision_mode_ && !this->precision_collection_active_()) {
+    this->reset_precision_collection_();
+    this->precision_collection_status_ = PrecisionCollectionStatus::COLLECTING;
+  }
   this->clear_exposure_assessment_();
   if (this->manual_exposure_) {
     this->clear_auto_exposure_policy_();
@@ -1403,6 +1407,13 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
   ESP_LOGD(TAG, "AS7261 calibrated frame stored: X=%f Y=%f Z=%f Lux=%f CCT=%f", this->calibrated_frame_.x,
            this->calibrated_frame_.y, this->calibrated_frame_.z, this->calibrated_frame_.lux,
            this->calibrated_frame_.cct);
+  if (this->precision_collection_active_()) {
+    if (!this->handle_precision_calibrated_frame_()) {
+      ESP_LOGW(TAG, "AS7261 precision-mode aggregation failed");
+      this->publish_nan_default_measurement_outputs_();
+    }
+    return;
+  }
   if (!this->derive_calculated_duv_()) {
     ESP_LOGW(TAG, "AS7261 calculated Duv derivation failed with %s",
              this->calculated_duv_status_to_string_(this->calculated_duv_status_));
@@ -1591,6 +1602,9 @@ void AS7261Component::publish_default_measurement_outputs_() {
 }
 
 void AS7261Component::publish_nan_default_measurement_outputs_() {
+  if (this->precision_collection_status_ != PrecisionCollectionStatus::IDLE) {
+    this->reset_precision_collection_();
+  }
 #ifdef USE_SENSOR
   if (this->cct_sensor_ != nullptr) {
     this->cct_sensor_->publish_state(NAN);
@@ -1635,6 +1649,159 @@ void AS7261Component::publish_manual_measurement_completion_() {
     this->completed_measurement_count_sensor_->publish_state(static_cast<float>(this->completed_measurement_count_));
   }
 #endif
+}
+
+void AS7261Component::reset_precision_collection_() {
+  for (size_t i = 0; i < PRECISION_FRAME_COUNT; i++) {
+    this->precision_frames_[i] = CalibratedFrame{};
+  }
+  this->precision_frame_count_ = 0;
+  this->precision_collection_status_ = PrecisionCollectionStatus::IDLE;
+}
+
+bool AS7261Component::handle_precision_calibrated_frame_() {
+  if (!calibrated_frame_valid_for_precision_(this->calibrated_frame_) ||
+      this->precision_frame_count_ >= PRECISION_FRAME_COUNT) {
+    this->precision_collection_status_ = PrecisionCollectionStatus::FAILED;
+    this->calibrated_frame_ = CalibratedFrame{};
+    this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
+    this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
+    this->clear_derived_color_(DerivedColorStatus::FAILED);
+    return false;
+  }
+
+  this->precision_frames_[this->precision_frame_count_] = this->calibrated_frame_;
+  this->precision_frame_count_++;
+  if (this->precision_frame_count_ < PRECISION_FRAME_COUNT) {
+    return this->start_next_precision_frame_();
+  }
+
+  return this->finish_precision_collection_();
+}
+
+bool AS7261Component::finish_precision_collection_() {
+  if (this->precision_frame_count_ != PRECISION_FRAME_COUNT) {
+    this->precision_collection_status_ = PrecisionCollectionStatus::FAILED;
+    return false;
+  }
+
+  const float median_lux =
+      median3_(this->precision_frames_[0].lux, this->precision_frames_[1].lux, this->precision_frames_[2].lux);
+  const float median_cct =
+      median3_(this->precision_frames_[0].cct, this->precision_frames_[1].cct, this->precision_frames_[2].cct);
+  const float median_x =
+      median3_(this->precision_frames_[0].x, this->precision_frames_[1].x, this->precision_frames_[2].x);
+  const float median_y =
+      median3_(this->precision_frames_[0].y, this->precision_frames_[1].y, this->precision_frames_[2].y);
+  const float median_z =
+      median3_(this->precision_frames_[0].z, this->precision_frames_[1].z, this->precision_frames_[2].z);
+  if (!std::isfinite(median_lux) || !std::isfinite(median_cct) || !std::isfinite(median_x) ||
+      !std::isfinite(median_y) || !std::isfinite(median_z)) {
+    this->precision_collection_status_ = PrecisionCollectionStatus::FAILED;
+    return false;
+  }
+
+  size_t discard_index = 0;
+  float largest_error = -1.0f;
+  for (size_t i = 0; i < PRECISION_FRAME_COUNT; i++) {
+    const CalibratedFrame &frame = this->precision_frames_[i];
+    const float error = precision_field_error_(frame.lux, median_lux) + precision_field_error_(frame.cct, median_cct) +
+                        precision_field_error_(frame.x, median_x) + precision_field_error_(frame.y, median_y) +
+                        precision_field_error_(frame.z, median_z);
+    if (!std::isfinite(error)) {
+      this->precision_collection_status_ = PrecisionCollectionStatus::FAILED;
+      return false;
+    }
+    if (error > largest_error) {
+      largest_error = error;
+      discard_index = i;
+    }
+  }
+
+  CalibratedFrame averaged{};
+  size_t kept_count = 0;
+  for (size_t i = 0; i < PRECISION_FRAME_COUNT; i++) {
+    if (i == discard_index) {
+      continue;
+    }
+    const CalibratedFrame &frame = this->precision_frames_[i];
+    averaged.x += frame.x;
+    averaged.y += frame.y;
+    averaged.z += frame.z;
+    averaged.lux += frame.lux;
+    averaged.cct += frame.cct;
+    kept_count++;
+  }
+  if (kept_count != 2) {
+    this->precision_collection_status_ = PrecisionCollectionStatus::FAILED;
+    return false;
+  }
+
+  averaged.x *= 0.5f;
+  averaged.y *= 0.5f;
+  averaged.z *= 0.5f;
+  averaged.lux *= 0.5f;
+  averaged.cct *= 0.5f;
+  if (!calibrated_frame_valid_for_precision_(averaged)) {
+    this->precision_collection_status_ = PrecisionCollectionStatus::FAILED;
+    return false;
+  }
+
+  this->calibrated_frame_ = averaged;
+  this->calibrated_frame_status_ = CalibratedFrameStatus::VALID;
+  this->precision_collection_status_ = PrecisionCollectionStatus::COMPLETE;
+  if (!this->derive_calculated_duv_()) {
+    ESP_LOGW(TAG, "AS7261 precision-mode calculated Duv derivation failed with %s",
+             this->calculated_duv_status_to_string_(this->calculated_duv_status_));
+  }
+  if (!this->derive_oklab_oklch_()) {
+    ESP_LOGW(TAG, "AS7261 precision-mode OKLab/OKLCH derivation failed with %s",
+             this->derived_color_status_to_string_(this->derived_color_status_));
+  }
+  this->publish_default_measurement_outputs_();
+  this->reset_precision_collection_();
+  return true;
+}
+
+bool AS7261Component::start_next_precision_frame_() {
+  this->raw_frame_ = RawFrame{};
+  this->raw_frame_status_ = RawFrameStatus::INVALID;
+  this->calibrated_frame_ = CalibratedFrame{};
+  this->calibrated_frame_status_ = CalibratedFrameStatus::INVALID;
+  this->clear_calculated_duv_(CalculatedDuvStatus::INVALID);
+  this->clear_derived_color_(DerivedColorStatus::INVALID);
+  return this->start_measurement_cycle_();
+}
+
+bool AS7261Component::calibrated_frame_valid_for_precision_(const CalibratedFrame &frame) {
+  return std::isfinite(frame.lux) && std::isfinite(frame.cct) && std::isfinite(frame.x) && std::isfinite(frame.y) &&
+         std::isfinite(frame.z) && frame.lux >= 0.0f && frame.cct >= 0.0f && frame.x >= 0.0f && frame.y >= 0.0f &&
+         frame.z >= 0.0f;
+}
+
+float AS7261Component::median3_(float a, float b, float c) {
+  if ((a <= b && b <= c) || (c <= b && b <= a)) {
+    return b;
+  }
+  if ((b <= a && a <= c) || (c <= a && a <= b)) {
+    return a;
+  }
+  return c;
+}
+
+float AS7261Component::precision_field_error_(float value, float median) {
+  if (!std::isfinite(value) || !std::isfinite(median)) {
+    return 1.0f;
+  }
+  const float denominator = std::fmax(std::fmax(std::fabs(value), std::fabs(median)), PRECISION_NORMALIZATION_FLOOR);
+  if (!std::isfinite(denominator) || denominator <= 0.0f) {
+    return 1.0f;
+  }
+  const float error = std::fabs(value - median) / denominator;
+  if (!std::isfinite(error)) {
+    return 1.0f;
+  }
+  return error > 1.0f ? 1.0f : error;
 }
 
 bool AS7261Component::derive_oklab_oklch_() {

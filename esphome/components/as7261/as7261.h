@@ -252,6 +252,13 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     float cct;
   };
 
+  enum class PrecisionCollectionStatus : uint8_t {
+    IDLE,
+    COLLECTING,
+    COMPLETE,
+    FAILED,
+  };
+
   struct Cie1960UcsPoint {
     float u;
     float v;
@@ -360,6 +367,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr float DARK_CHANNEL_RECOVERY_MIN_RATIO = 1.0e-6f;
   static constexpr float DARK_CHANNEL_RECOVERY_MAX_RATIO = 1.0f;
   static constexpr float DARK_CHANNEL_RECOVERY_CURRENT_DARK_MAX_PERCENT = CLEAR_OVEREXPOSED_PERCENT;
+  static constexpr size_t PRECISION_FRAME_COUNT = 3;
+  static constexpr float PRECISION_NORMALIZATION_FLOOR = 1.0f;
 
   const char *gain_to_string_() const;
   bool transport_busy_() const { return this->transport_state_ != TransportState::IDLE; }
@@ -428,6 +437,16 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void publish_default_measurement_outputs_();
   void publish_nan_default_measurement_outputs_();
   void publish_manual_measurement_completion_();
+  bool precision_collection_active_() const {
+    return this->precision_collection_status_ == PrecisionCollectionStatus::COLLECTING;
+  }
+  void reset_precision_collection_();
+  bool handle_precision_calibrated_frame_();
+  bool finish_precision_collection_();
+  bool start_next_precision_frame_();
+  static bool calibrated_frame_valid_for_precision_(const CalibratedFrame &frame);
+  static float median3_(float a, float b, float c);
+  static float precision_field_error_(float value, float median);
   bool derive_calculated_duv_();
   bool derive_oklab_oklch_();
   static bool calibrated_frame_valid_for_duv_(const CalibratedFrame &frame);
@@ -533,6 +552,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   CalculatedDuvStatus calculated_duv_status_{CalculatedDuvStatus::INVALID};
   DerivedColorFrame derived_color_frame_{};
   DerivedColorStatus derived_color_status_{DerivedColorStatus::INVALID};
+  CalibratedFrame precision_frames_[PRECISION_FRAME_COUNT]{};
+  size_t precision_frame_count_{0};
+  PrecisionCollectionStatus precision_collection_status_{PrecisionCollectionStatus::IDLE};
   ExposureAssessment exposure_assessment_{};
   AutoExposurePolicy auto_exposure_policy_{};
   DarkChannelRecoveryState dark_channel_recovery_state_{};
