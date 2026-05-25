@@ -1316,17 +1316,25 @@ bool AS7261Component::start_calibrated_frame_readout_() {
     return false;
   }
 
-  const CommandSequenceStep steps[] = {
+  CommandSequenceStep steps[COMMAND_SEQUENCE_LENGTH] = {
       {"ATXYZC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
       {"ATLUXC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
       {"ATCCTC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
+  size_t step_count = 3;
+#ifdef USE_SENSOR
+  if (this->duv_cie1976_sensor_ != nullptr) {
+    steps[step_count] = CommandSequenceStep{"ATDUVC", DiagnosticState::IDLE, SequenceFailurePolicy::CONTINUE};
+    step_count++;
+  }
+#endif
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::RUNNING;
   this->clear_calculated_duv_(CalculatedDuvStatus::INVALID);
   this->clear_derived_color_(DerivedColorStatus::INVALID);
+  this->clear_vendor_duv_cie1976_();
   this->sequence_owner_ = SequenceOwner::CALIBRATED_FRAME_READOUT;
-  if (this->start_command_sequence_(steps, 3)) {
+  if (this->start_command_sequence_(steps, step_count)) {
     return true;
   }
 
@@ -1335,11 +1343,15 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
   this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
   this->clear_derived_color_(DerivedColorStatus::FAILED);
+  this->clear_vendor_duv_cie1976_();
   return false;
 }
 
 bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result) {
   if (result != TransportResult::OK) {
+    if (step_index == 3) {
+      this->clear_vendor_duv_cie1976_();
+    }
     return true;
   }
 
@@ -1362,6 +1374,11 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
 
   float parsed = 0.0f;
   if (!parse_calibrated_value_(value, &parsed)) {
+    if (step_index == 3) {
+      this->clear_vendor_duv_cie1976_();
+      ESP_LOGW(TAG, "Unable to parse AS7261 vendor CIE 1976 DUV response: %s", value == nullptr ? "<empty>" : value);
+      return true;
+    }
     ESP_LOGW(TAG, "Unable to parse AS7261 calibrated %s response: %s", step_index == 1 ? "lux" : "CCT",
              value == nullptr ? "<empty>" : value);
     this->calibrated_frame_ = CalibratedFrame{};
@@ -1376,6 +1393,11 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
   }
   if (step_index == 2) {
     this->calibrated_frame_.cct = parsed;
+    return true;
+  }
+  if (step_index == 3) {
+    this->vendor_duv_cie1976_ = parsed;
+    this->vendor_duv_cie1976_valid_ = true;
     return true;
   }
 
@@ -1601,7 +1623,93 @@ void AS7261Component::publish_default_measurement_outputs_() {
         std::isfinite(this->derived_color_frame_.oklch.h) ? this->derived_color_frame_.oklch.h : NAN);
   }
 #endif
+  this->publish_optional_measurement_diagnostics_();
   this->publish_manual_measurement_completion_();
+}
+
+void AS7261Component::publish_optional_measurement_diagnostics_() {
+#ifdef USE_SENSOR
+  if (this->duv_cie1976_sensor_ != nullptr) {
+    this->duv_cie1976_sensor_->publish_state(
+        this->vendor_duv_cie1976_valid_ && std::isfinite(this->vendor_duv_cie1976_) ? this->vendor_duv_cie1976_ : NAN);
+  }
+  if (this->near_ir_percent_sensor_ != nullptr) {
+    float near_ir_percent = NAN;
+    if (this->raw_frame_status_ == RawFrameStatus::VALID && this->raw_frame_.clear > 0) {
+      near_ir_percent = (CLEAR_PERCENT_SCALE * static_cast<float>(this->raw_frame_.near_ir)) /
+                        static_cast<float>(this->raw_frame_.clear);
+      if (!std::isfinite(near_ir_percent)) {
+        near_ir_percent = NAN;
+      }
+    }
+    this->near_ir_percent_sensor_->publish_state(near_ir_percent);
+  }
+  if (this->raw_clear_sensor_ != nullptr) {
+    this->raw_clear_sensor_->publish_state(
+        this->raw_frame_status_ == RawFrameStatus::VALID ? static_cast<float>(this->raw_frame_.clear) : NAN);
+  }
+  if (this->raw_dark_sensor_ != nullptr) {
+    this->raw_dark_sensor_->publish_state(
+        this->raw_frame_status_ == RawFrameStatus::VALID ? static_cast<float>(this->raw_frame_.dark) : NAN);
+  }
+  if (this->raw_near_ir_sensor_ != nullptr) {
+    this->raw_near_ir_sensor_->publish_state(
+        this->raw_frame_status_ == RawFrameStatus::VALID ? static_cast<float>(this->raw_frame_.near_ir) : NAN);
+  }
+  if (this->x_sensor_ != nullptr) {
+    this->x_sensor_->publish_state(this->calibrated_frame_status_ == CalibratedFrameStatus::VALID &&
+                                           std::isfinite(this->calibrated_frame_.x)
+                                       ? this->calibrated_frame_.x
+                                       : NAN);
+  }
+  if (this->y_sensor_ != nullptr) {
+    this->y_sensor_->publish_state(this->calibrated_frame_status_ == CalibratedFrameStatus::VALID &&
+                                           std::isfinite(this->calibrated_frame_.y)
+                                       ? this->calibrated_frame_.y
+                                       : NAN);
+  }
+  if (this->z_sensor_ != nullptr) {
+    this->z_sensor_->publish_state(this->calibrated_frame_status_ == CalibratedFrameStatus::VALID &&
+                                           std::isfinite(this->calibrated_frame_.z)
+                                       ? this->calibrated_frame_.z
+                                       : NAN);
+  }
+#endif
+}
+
+void AS7261Component::publish_nan_optional_measurement_diagnostics_() {
+  this->clear_vendor_duv_cie1976_();
+#ifdef USE_SENSOR
+  if (this->duv_cie1976_sensor_ != nullptr) {
+    this->duv_cie1976_sensor_->publish_state(NAN);
+  }
+  if (this->near_ir_percent_sensor_ != nullptr) {
+    this->near_ir_percent_sensor_->publish_state(NAN);
+  }
+  if (this->raw_clear_sensor_ != nullptr) {
+    this->raw_clear_sensor_->publish_state(NAN);
+  }
+  if (this->raw_dark_sensor_ != nullptr) {
+    this->raw_dark_sensor_->publish_state(NAN);
+  }
+  if (this->raw_near_ir_sensor_ != nullptr) {
+    this->raw_near_ir_sensor_->publish_state(NAN);
+  }
+  if (this->x_sensor_ != nullptr) {
+    this->x_sensor_->publish_state(NAN);
+  }
+  if (this->y_sensor_ != nullptr) {
+    this->y_sensor_->publish_state(NAN);
+  }
+  if (this->z_sensor_ != nullptr) {
+    this->z_sensor_->publish_state(NAN);
+  }
+#endif
+}
+
+void AS7261Component::clear_vendor_duv_cie1976_() {
+  this->vendor_duv_cie1976_ = NAN;
+  this->vendor_duv_cie1976_valid_ = false;
 }
 
 void AS7261Component::publish_nan_default_measurement_outputs_() {
@@ -1637,6 +1745,7 @@ void AS7261Component::publish_nan_default_measurement_outputs_() {
     this->oklch_h_sensor_->publish_state(NAN);
   }
 #endif
+  this->publish_nan_optional_measurement_diagnostics_();
   this->publish_manual_measurement_completion_();
 }
 
@@ -1899,8 +2008,7 @@ uint8_t AS7261Component::calculate_single_bank_probe_interval_() const {
   if (integration_time_us == 0) {
     return 1;
   }
-  uint32_t interval =
-      (SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US + integration_time_us - 1U) / integration_time_us;
+  uint32_t interval = (SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US + integration_time_us - 1U) / integration_time_us;
   interval = std::max<uint32_t>(interval, 1U);
   interval = std::min<uint32_t>(interval, 255U);
   return static_cast<uint8_t>(interval);

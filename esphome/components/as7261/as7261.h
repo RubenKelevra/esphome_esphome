@@ -435,8 +435,11 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static uint8_t clamp_auto_exposure_integration_time_(float integration_time);
   bool default_measurement_outputs_publishable_() const;
   void publish_default_measurement_outputs_();
+  void publish_optional_measurement_diagnostics_();
   void publish_nan_default_measurement_outputs_();
+  void publish_nan_optional_measurement_diagnostics_();
   void publish_manual_measurement_completion_();
+  void clear_vendor_duv_cie1976_();
   bool precision_collection_active_() const {
     return this->precision_collection_status_ == PrecisionCollectionStatus::COLLECTING;
   }
@@ -552,6 +555,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   CalculatedDuvStatus calculated_duv_status_{CalculatedDuvStatus::INVALID};
   DerivedColorFrame derived_color_frame_{};
   DerivedColorStatus derived_color_status_{DerivedColorStatus::INVALID};
+  float vendor_duv_cie1976_{0.0f};
+  bool vendor_duv_cie1976_valid_{false};
   CalibratedFrame precision_frames_[PRECISION_FRAME_COUNT]{};
   size_t precision_frame_count_{0};
   PrecisionCollectionStatus precision_collection_status_{PrecisionCollectionStatus::IDLE};
