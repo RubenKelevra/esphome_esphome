@@ -1,3 +1,5 @@
+import math
+
 from esphome import pins
 import esphome.codegen as cg
 from esphome.components import uart
@@ -22,6 +24,12 @@ AS7261Component = as7261_ns.class_(
 CONF_AS7261_ID = "as7261_id"
 CONF_INT_PIN = "int_pin"
 CONF_PRECISION_MODE = "precision_mode"
+CONF_OKLAB_REFERENCE_ILLUMINANCE = "oklab_reference_illuminance"
+
+DEFAULT_OKLAB_REFERENCE_ILLUMINANCE = 1000.0
+OKLAB_REFERENCE_ILLUMINANCE_PRESETS = {
+    "asr_a3_4_color_inspection": DEFAULT_OKLAB_REFERENCE_ILLUMINANCE,
+}
 
 AS7261Gain = as7261_ns.enum("AS7261Gain")
 AS7261_GAINS = {
@@ -43,6 +51,22 @@ def validate_exposure_config(config):
     return config
 
 
+def validate_oklab_reference_illuminance(value):
+    if isinstance(value, str):
+        normalized_value = cv.string(value).strip().lower().replace("-", "_")
+        if normalized_value in OKLAB_REFERENCE_ILLUMINANCE_PRESETS:
+            return OKLAB_REFERENCE_ILLUMINANCE_PRESETS[normalized_value]
+
+    illuminance = cv.float_with_unit(
+        "illuminance", "(lx|lux)?", optional_unit=True
+    )(value)
+    if not math.isfinite(illuminance) or illuminance <= 0.0:
+        raise cv.Invalid(
+            f"{CONF_OKLAB_REFERENCE_ILLUMINANCE} must be a finite positive illuminance"
+        )
+    return illuminance
+
+
 def validate_active_low_pin(config):
     if not config.get(CONF_INVERTED):
         raise cv.Invalid("AS7261 pins are active-low; set inverted: true")
@@ -62,6 +86,10 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_PRECISION_MODE, default=False): cv.boolean,
             cv.Optional(CONF_GAIN): cv.enum(AS7261_GAINS, upper=True),
             cv.Optional(CONF_INTEGRATION_TIME): cv.int_range(min=1, max=255),
+            cv.Optional(
+                CONF_OKLAB_REFERENCE_ILLUMINANCE,
+                default=DEFAULT_OKLAB_REFERENCE_ILLUMINANCE,
+            ): validate_oklab_reference_illuminance,
         }
     )
     .extend(cv.polling_component_schema("60s"))
@@ -91,6 +119,11 @@ async def to_code(config):
     cg.add(var.set_reset_pin(reset_pin))
 
     cg.add(var.set_precision_mode(config[CONF_PRECISION_MODE]))
+    cg.add(
+        var.set_oklab_reference_illuminance(
+            config[CONF_OKLAB_REFERENCE_ILLUMINANCE]
+        )
+    )
 
     if CONF_GAIN in config:
         cg.add(var.set_manual_exposure(config[CONF_GAIN], config[CONF_INTEGRATION_TIME]))

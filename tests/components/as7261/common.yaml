@@ -9,6 +9,7 @@ as7261:
   reset_pin:
     number: GPIO5
     inverted: true
+  oklab_reference_illuminance: 750 lx
   update_interval: 30s
 
 button:

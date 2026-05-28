@@ -27,6 +27,12 @@ void AS7261Component::setup() {
   }
 }
 
+void AS7261Component::set_oklab_reference_illuminance(float illuminance_lx) {
+  if (std::isfinite(illuminance_lx) && illuminance_lx > 0.0f) {
+    this->oklab_reference_illuminance_ = illuminance_lx;
+  }
+}
+
 void AS7261Component::dump_config() {
   ESP_LOGCONFIG(TAG, "AS7261 UART color sensor:");
   LOG_PIN("  INT Pin: ", this->int_pin_);
@@ -38,6 +44,7 @@ void AS7261Component::dump_config() {
   } else {
     ESP_LOGCONFIG(TAG, "  Exposure: automatic");
   }
+  ESP_LOGCONFIG(TAG, "  OKLab reference illuminance: %.1f lx", this->oklab_reference_illuminance_);
   this->check_uart_settings(115200);
   LOG_UPDATE_INTERVAL(this);
 #ifdef USE_SENSOR
@@ -1923,9 +1930,10 @@ bool AS7261Component::derive_oklab_oklch_() {
     return false;
   }
 
-  const float normalized_x = this->calibrated_frame_.x / OKLAB_REFERENCE_ILLUMINANCE_LX;
-  const float normalized_y = this->calibrated_frame_.y / OKLAB_REFERENCE_ILLUMINANCE_LX;
-  const float normalized_z = this->calibrated_frame_.z / OKLAB_REFERENCE_ILLUMINANCE_LX;
+  const float reference_illuminance = this->oklab_reference_illuminance_;
+  const float normalized_x = this->calibrated_frame_.x / reference_illuminance;
+  const float normalized_y = this->calibrated_frame_.y / reference_illuminance;
+  const float normalized_z = this->calibrated_frame_.z / reference_illuminance;
 
   const float l =
       std::cbrt((0.8189330101f * normalized_x) + (0.3618667424f * normalized_y) - (0.1288597137f * normalized_z));
@@ -1966,10 +1974,10 @@ bool AS7261Component::derive_oklab_oklch_() {
   return true;
 }
 
-bool AS7261Component::calibrated_xyz_valid_for_oklab_(const CalibratedFrame &frame) {
+bool AS7261Component::calibrated_xyz_valid_for_oklab_(const CalibratedFrame &frame) const {
   return std::isfinite(frame.x) && std::isfinite(frame.y) && std::isfinite(frame.z) && frame.x >= 0.0f &&
-         frame.y >= 0.0f && frame.z >= 0.0f && std::isfinite(OKLAB_REFERENCE_ILLUMINANCE_LX) &&
-         OKLAB_REFERENCE_ILLUMINANCE_LX > 0.0f;
+         frame.y >= 0.0f && frame.z >= 0.0f && std::isfinite(this->oklab_reference_illuminance_) &&
+         this->oklab_reference_illuminance_ > 0.0f;
 }
 
 void AS7261Component::clear_terminal_frame_state_() {

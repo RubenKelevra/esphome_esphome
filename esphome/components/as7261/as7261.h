@@ -77,6 +77,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void set_int_pin(InternalGPIOPin *int_pin) { this->int_pin_ = int_pin; }
   void set_reset_pin(GPIOPin *reset_pin) { this->reset_pin_ = reset_pin; }
   void set_precision_mode(bool precision_mode) { this->precision_mode_ = precision_mode; }
+  void set_oklab_reference_illuminance(float illuminance_lx);
   void set_manual_exposure(AS7261Gain gain, uint8_t integration_time) {
     this->manual_exposure_ = true;
     this->manual_exposure_state_ = ManualExposureCommandState::PENDING;
@@ -339,7 +340,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr uint32_t FRAME_WATCHDOG_MARGIN_MS = 250;
   static constexpr uint8_t SINGLE_BANK_PROBE_SENSOR_MODE = 1;
   static constexpr uint32_t SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US = 50000;
-  static constexpr float OKLAB_REFERENCE_ILLUMINANCE_LX = 1000.0f;
+  static constexpr float DEFAULT_OKLAB_REFERENCE_ILLUMINANCE_LX = 1000.0f;
   static constexpr float OKLCH_ZERO_CHROMA_HUE_DEGREES = 0.0f;
   static constexpr float DEGREES_PER_RADIAN = 57.29577951308232f;
   // Piecewise CCT-to-CIE 1931 xy Planckian approximation range. Reject, do not extrapolate.
@@ -453,7 +454,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool derive_calculated_duv_();
   bool derive_oklab_oklch_();
   static bool calibrated_frame_valid_for_duv_(const CalibratedFrame &frame);
-  static bool calibrated_xyz_valid_for_oklab_(const CalibratedFrame &frame);
+  bool calibrated_xyz_valid_for_oklab_(const CalibratedFrame &frame) const;
   static bool cie1960_uv_from_xyz_(const CalibratedFrame &frame, Cie1960UcsPoint *point);
   static bool cie1960_uv_from_xy_(float x, float y, Cie1960UcsPoint *point);
   static bool planckian_locus_uv_from_cct_(float cct, Cie1960UcsPoint *point);
@@ -571,6 +572,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool active_measurement_counted_{false};
   uint32_t completed_measurement_count_{0};
   bool precision_mode_{false};
+  float oklab_reference_illuminance_{DEFAULT_OKLAB_REFERENCE_ILLUMINANCE_LX};
   bool manual_exposure_{false};
   AS7261Gain gain_{AS7261_GAIN_16X};
   uint8_t integration_time_{0};
