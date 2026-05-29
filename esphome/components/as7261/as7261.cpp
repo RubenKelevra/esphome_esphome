@@ -1663,6 +1663,26 @@ void AS7261Component::publish_optional_measurement_diagnostics_() {
     this->raw_near_ir_sensor_->publish_state(
         this->raw_frame_status_ == RawFrameStatus::VALID ? static_cast<float>(this->raw_frame_.near_ir) : NAN);
   }
+
+  Cie1960UcsPoint cie1960{};
+  const bool chromaticity_valid = this->calibrated_frame_status_ == CalibratedFrameStatus::VALID &&
+                                  cie1960_uv_from_xyz_(this->calibrated_frame_, &cie1960);
+  const float u_cie1960 = chromaticity_valid ? cie1960.u : NAN;
+  const float v_cie1960 = chromaticity_valid ? cie1960.v : NAN;
+  const float u_cie1976 = u_cie1960;
+  const float v_cie1976 = chromaticity_valid ? 1.5f * cie1960.v : NAN;
+  if (this->u_cie1960_sensor_ != nullptr) {
+    this->u_cie1960_sensor_->publish_state(std::isfinite(u_cie1960) ? u_cie1960 : NAN);
+  }
+  if (this->v_cie1960_sensor_ != nullptr) {
+    this->v_cie1960_sensor_->publish_state(std::isfinite(v_cie1960) ? v_cie1960 : NAN);
+  }
+  if (this->u_cie1976_sensor_ != nullptr) {
+    this->u_cie1976_sensor_->publish_state(std::isfinite(u_cie1976) ? u_cie1976 : NAN);
+  }
+  if (this->v_cie1976_sensor_ != nullptr) {
+    this->v_cie1976_sensor_->publish_state(std::isfinite(v_cie1976) ? v_cie1976 : NAN);
+  }
   if (this->x_sensor_ != nullptr) {
     this->x_sensor_->publish_state(this->calibrated_frame_status_ == CalibratedFrameStatus::VALID &&
                                            std::isfinite(this->calibrated_frame_.x)
@@ -1701,6 +1721,18 @@ void AS7261Component::publish_nan_optional_measurement_diagnostics_() {
   }
   if (this->raw_near_ir_sensor_ != nullptr) {
     this->raw_near_ir_sensor_->publish_state(NAN);
+  }
+  if (this->u_cie1960_sensor_ != nullptr) {
+    this->u_cie1960_sensor_->publish_state(NAN);
+  }
+  if (this->v_cie1960_sensor_ != nullptr) {
+    this->v_cie1960_sensor_->publish_state(NAN);
+  }
+  if (this->u_cie1976_sensor_ != nullptr) {
+    this->u_cie1976_sensor_->publish_state(NAN);
+  }
+  if (this->v_cie1976_sensor_ != nullptr) {
+    this->v_cie1976_sensor_->publish_state(NAN);
   }
   if (this->x_sensor_ != nullptr) {
     this->x_sensor_->publish_state(NAN);

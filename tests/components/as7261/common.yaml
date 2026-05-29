@@ -56,6 +56,14 @@ sensor:
       name: AS7261 Raw Dark
     raw_near_ir:
       name: AS7261 Raw Near IR
+    u_cie1960:
+      name: AS7261 u CIE 1960
+    v_cie1960:
+      name: AS7261 v CIE 1960
+    u_cie1976:
+      name: AS7261 u CIE 1976
+    v_cie1976:
+      name: AS7261 v CIE 1976
     x:
       name: AS7261 X
     y:

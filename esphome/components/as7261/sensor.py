@@ -36,6 +36,10 @@ CONF_OKLCH_H = "oklch_h"
 CONF_RAW_CLEAR = "raw_clear"
 CONF_RAW_DARK = "raw_dark"
 CONF_RAW_NEAR_IR = "raw_near_ir"
+CONF_U_CIE1960 = "u_cie1960"
+CONF_U_CIE1976 = "u_cie1976"
+CONF_V_CIE1960 = "v_cie1960"
+CONF_V_CIE1976 = "v_cie1976"
 CONF_X = "x"
 CONF_Y = "y"
 CONF_Z = "z"
@@ -120,6 +124,10 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_RAW_CLEAR): diagnostic_counts_schema,
         cv.Optional(CONF_RAW_DARK): diagnostic_counts_schema,
         cv.Optional(CONF_RAW_NEAR_IR): diagnostic_counts_schema,
+        cv.Optional(CONF_U_CIE1960): unitless_schema,
+        cv.Optional(CONF_V_CIE1960): unitless_schema,
+        cv.Optional(CONF_U_CIE1976): unitless_schema,
+        cv.Optional(CONF_V_CIE1976): unitless_schema,
         cv.Optional(CONF_X): diagnostic_unitless_schema,
         cv.Optional(CONF_Y): diagnostic_unitless_schema,
         cv.Optional(CONF_Z): diagnostic_unitless_schema,
@@ -143,6 +151,10 @@ SENSORS = {
     CONF_RAW_CLEAR: "set_raw_clear_sensor",
     CONF_RAW_DARK: "set_raw_dark_sensor",
     CONF_RAW_NEAR_IR: "set_raw_near_ir_sensor",
+    CONF_U_CIE1960: "set_u_cie1960_sensor",
+    CONF_V_CIE1960: "set_v_cie1960_sensor",
+    CONF_U_CIE1976: "set_u_cie1976_sensor",
+    CONF_V_CIE1976: "set_v_cie1976_sensor",
     CONF_X: "set_x_sensor",
     CONF_Y: "set_y_sensor",
     CONF_Z: "set_z_sensor",
