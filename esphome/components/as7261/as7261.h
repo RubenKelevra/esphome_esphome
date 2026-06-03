@@ -141,7 +141,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   enum class FrameState : uint8_t {
     IDLE,
     TRIGGER_RUNNING,
-    WAITING_INT,
+    WAITING_TIMED_READOUT,
     READY,
     READOUT_RUNNING,
     TIMEOUT,
@@ -161,7 +161,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   enum class SingleBankProbeState : uint8_t {
     IDLE,
     CONFIGURE_RUNNING,
-    WAITING_INT,
+    WAITING_TIMED_READOUT,
     STOP_RUNNING,
     RAW_READOUT_RUNNING,
   };
@@ -341,7 +341,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr float DEVICE_TEMPERATURE_UNSAFE_C = 76.5f;
   static constexpr uint32_t AS7261_INTEGRATION_TIME_STEP_US = 2800;
   static constexpr uint8_t AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME = 255;
-  static constexpr uint32_t FRAME_WATCHDOG_MARGIN_MS = 250;
+  static constexpr uint32_t FRAME_TIMED_READOUT_MARGIN_MS = 250;
+  static constexpr uint32_t FRAME_TIMED_READOUT_RETRY_MARGIN_MS = 1000;
+  static constexpr uint8_t FRAME_TIMED_READOUT_ATTEMPT_LIMIT = 2;
   static constexpr uint8_t SINGLE_BANK_PROBE_SENSOR_MODE = 1;
   static constexpr uint32_t SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US = 50000;
   static constexpr float DEFAULT_OKLAB_REFERENCE_ILLUMINANCE_LX = 1000.0f;
@@ -463,11 +465,16 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static bool cie1960_uv_from_xy_(float x, float y, Cie1960UcsPoint *point);
   static bool planckian_locus_uv_from_cct_(float cct, Cie1960UcsPoint *point);
   bool handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result);
-  bool frame_int_ready_() const;
-  uint32_t calculate_frame_watchdog_timeout_ms_() const;
+  void schedule_frame_timed_readout_(uint32_t wait_ms);
+  bool retry_timed_frame_readout_(const char *reason);
+  void fail_timed_frame_readout_(const char *reason, RawFrameStatus raw_status, CalibratedFrameStatus calibrated_status,
+                                 CalculatedDuvStatus duv_status, DerivedColorStatus derived_status);
+  uint32_t calculate_frame_timed_readout_wait_ms_() const;
+  uint8_t measurement_integration_time_() const;
+  static bool raw_frame_empty_(const RawFrame &frame);
   uint8_t single_bank_probe_integration_time_() const;
   uint8_t calculate_single_bank_probe_interval_() const;
-  uint32_t calculate_single_bank_probe_watchdog_timeout_ms_() const;
+  uint32_t calculate_single_bank_probe_timed_readout_wait_ms_() const;
   void handle_finished_manual_exposure_commands_(SequenceStatus status);
   void handle_finished_auto_exposure_candidate_commands_(SequenceStatus status);
   void handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result);
@@ -546,9 +553,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   char single_bank_probe_interval_command_[COMMAND_BUFFER_LENGTH]{};
   size_t response_length_{0};
   uint32_t frame_wait_started_millis_{0};
-  uint32_t frame_watchdog_timeout_ms_{0};
+  uint32_t frame_timed_readout_wait_ms_{0};
+  uint8_t frame_readout_attempt_{0};
   uint32_t single_bank_probe_wait_started_millis_{0};
-  uint32_t single_bank_probe_watchdog_timeout_ms_{0};
+  uint32_t single_bank_probe_timed_readout_wait_ms_{0};
   uint8_t response_line_count_{0};
   RawFrame raw_frame_{};
   RawFrameStatus raw_frame_status_{RawFrameStatus::INVALID};

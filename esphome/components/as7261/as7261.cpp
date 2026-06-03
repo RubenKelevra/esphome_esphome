@@ -520,17 +520,10 @@ void AS7261Component::handle_finished_frame_trigger_(SequenceStatus status) {
     ESP_LOGW(TAG, "AS7261 one-shot trigger failed with %s", this->sequence_status_to_string_(status));
     return;
   }
-  if (this->int_pin_ == nullptr) {
-    this->frame_state_ = FrameState::ERROR;
-    this->publish_nan_default_measurement_outputs_();
-    ESP_LOGE(TAG, "AS7261 INT pin is not configured; cannot wait for frame completion");
-    return;
-  }
-  this->frame_wait_started_millis_ = millis();
-  this->frame_watchdog_timeout_ms_ = this->calculate_frame_watchdog_timeout_ms_();
-  this->frame_state_ = FrameState::WAITING_INT;
-  ESP_LOGD(TAG, "AS7261 one-shot trigger sent; waiting up to %u ms for INT",
-           static_cast<unsigned>(this->frame_watchdog_timeout_ms_));
+  this->frame_readout_attempt_ = 0;
+  this->schedule_frame_timed_readout_(this->calculate_frame_timed_readout_wait_ms_());
+  ESP_LOGD(TAG, "AS7261 one-shot trigger sent; waiting %u ms before timed UART readout",
+           static_cast<unsigned>(this->frame_timed_readout_wait_ms_));
 }
 
 void AS7261Component::poll_frame_trigger_() {
@@ -576,18 +569,13 @@ void AS7261Component::poll_frame_trigger_() {
     return;
   }
 
-  if (this->frame_state_ != FrameState::WAITING_INT) {
+  if (this->frame_state_ != FrameState::WAITING_TIMED_READOUT) {
     return;
   }
-  if (this->frame_int_ready_()) {
+  if (millis() - this->frame_wait_started_millis_ >= this->frame_timed_readout_wait_ms_) {
     this->frame_state_ = FrameState::READY;
-    ESP_LOGD(TAG, "AS7261 one-shot frame is ready");
-    return;
-  }
-  if (millis() - this->frame_wait_started_millis_ >= this->frame_watchdog_timeout_ms_) {
-    this->frame_state_ = FrameState::TIMEOUT;
-    ESP_LOGW(TAG, "AS7261 one-shot frame timed out waiting for INT after %u ms",
-             static_cast<unsigned>(this->frame_watchdog_timeout_ms_));
+    ESP_LOGD(TAG, "AS7261 timed UART readout window elapsed after %u ms",
+             static_cast<unsigned>(this->frame_timed_readout_wait_ms_));
   }
 }
 
@@ -596,12 +584,6 @@ bool AS7261Component::start_single_bank_probe_() {
       this->frame_state_ != FrameState::IDLE || this->single_bank_probe_state_ != SingleBankProbeState::IDLE) {
     return false;
   }
-  if (this->int_pin_ == nullptr) {
-    this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
-    ESP_LOGE(TAG, "AS7261 INT pin is not configured; cannot run single-bank probe");
-    return false;
-  }
-
   this->initialize_auto_exposure_policy_();
   const int mode_command_length = std::snprintf(this->single_bank_probe_mode_command_, COMMAND_BUFFER_LENGTH,
                                                 "ATTCSMD=%u", static_cast<unsigned>(SINGLE_BANK_PROBE_SENSOR_MODE));
@@ -645,46 +627,34 @@ void AS7261Component::handle_finished_single_bank_probe_configure_(SequenceStatu
   }
 
   this->single_bank_probe_wait_started_millis_ = millis();
-  this->single_bank_probe_watchdog_timeout_ms_ = this->calculate_single_bank_probe_watchdog_timeout_ms_();
-  this->single_bank_probe_state_ = SingleBankProbeState::WAITING_INT;
+  this->single_bank_probe_timed_readout_wait_ms_ = this->calculate_single_bank_probe_timed_readout_wait_ms_();
+  this->single_bank_probe_state_ = SingleBankProbeState::WAITING_TIMED_READOUT;
   this->single_bank_probe_status_ = SingleBankProbeStatus::RUNNING;
-  ESP_LOGD(TAG, "AS7261 single-bank probe burst started; waiting up to %u ms for INT",
-           static_cast<unsigned>(this->single_bank_probe_watchdog_timeout_ms_));
+  ESP_LOGD(TAG, "AS7261 single-bank probe burst started; waiting %u ms before timed UART stop/readout",
+           static_cast<unsigned>(this->single_bank_probe_timed_readout_wait_ms_));
 }
 
 void AS7261Component::poll_single_bank_probe_() {
-  if (this->single_bank_probe_state_ != SingleBankProbeState::WAITING_INT) {
+  if (this->single_bank_probe_state_ != SingleBankProbeState::WAITING_TIMED_READOUT) {
     return;
   }
 
-  if (this->frame_int_ready_()) {
-    if (!this->start_single_bank_probe_stop_()) {
-      this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
-      ESP_LOGW(TAG, "Unable to stop AS7261 single-bank probe burst after INT");
-      if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
-        this->fail_auto_exposure_convergence_();
-      }
-    }
+  if (millis() - this->single_bank_probe_wait_started_millis_ < this->single_bank_probe_timed_readout_wait_ms_) {
     return;
   }
 
-  if (millis() - this->single_bank_probe_wait_started_millis_ >= this->single_bank_probe_watchdog_timeout_ms_) {
-    this->single_bank_probe_raw_frame_ = RawFrame{};
-    this->single_bank_probe_status_ = SingleBankProbeStatus::TIMEOUT;
-    ESP_LOGW(TAG, "AS7261 single-bank probe timed out waiting for INT after %u ms",
-             static_cast<unsigned>(this->single_bank_probe_watchdog_timeout_ms_));
-    if (!this->start_single_bank_probe_stop_()) {
-      this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
-      if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
-        this->fail_auto_exposure_convergence_();
-      }
+  if (!this->start_single_bank_probe_stop_()) {
+    this->clear_single_bank_probe_result_(SingleBankProbeStatus::FAILED);
+    ESP_LOGW(TAG, "Unable to stop AS7261 single-bank probe burst after timed wait");
+    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+      this->fail_auto_exposure_convergence_();
     }
   }
 }
 
 bool AS7261Component::start_single_bank_probe_stop_() {
   if (this->transport_busy_() || this->sequence_active_() ||
-      this->single_bank_probe_state_ != SingleBankProbeState::WAITING_INT) {
+      this->single_bank_probe_state_ != SingleBankProbeState::WAITING_TIMED_READOUT) {
     return false;
   }
 
@@ -706,16 +676,6 @@ bool AS7261Component::start_single_bank_probe_stop_() {
 }
 
 void AS7261Component::handle_finished_single_bank_probe_stop_(SequenceStatus status) {
-  if (this->single_bank_probe_status_ == SingleBankProbeStatus::TIMEOUT) {
-    this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
-    ESP_LOGW(TAG, "AS7261 single-bank probe burst stopped after INT timeout with %s",
-             this->sequence_status_to_string_(status));
-    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
-      this->fail_auto_exposure_convergence_();
-    }
-    return;
-  }
-
   if (status != SequenceStatus::COMPLETED) {
     this->clear_single_bank_probe_result_(status == SequenceStatus::TIMEOUT    ? SingleBankProbeStatus::TIMEOUT
                                           : status == SequenceStatus::OVERFLOW ? SingleBankProbeStatus::OVERFLOW
@@ -779,6 +739,14 @@ void AS7261Component::handle_finished_single_bank_probe_raw_readout_(SequenceSta
     }
     return;
   }
+  if (raw_frame_empty_(frame)) {
+    this->clear_single_bank_probe_result_(SingleBankProbeStatus::MALFORMED);
+    ESP_LOGW(TAG, "Rejecting empty all-zero AS7261 single-bank probe raw frame");
+    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
+      this->fail_auto_exposure_convergence_();
+    }
+    return;
+  }
 
   this->single_bank_probe_raw_frame_ = frame;
   this->single_bank_probe_status_ = SingleBankProbeStatus::VALID;
@@ -833,39 +801,36 @@ bool AS7261Component::start_raw_frame_readout_() {
 
 void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) {
   if (status != SequenceStatus::COMPLETED) {
-    this->raw_frame_ = RawFrame{};
-    this->raw_frame_status_ = status == SequenceStatus::TIMEOUT    ? RawFrameStatus::TIMEOUT
-                              : status == SequenceStatus::OVERFLOW ? RawFrameStatus::OVERFLOW
-                                                                   : RawFrameStatus::FAILED;
-    this->clear_exposure_assessment_();
-    this->calibrated_frame_ = CalibratedFrame{};
-    this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
-                                     : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
-                                                                          : CalibratedFrameStatus::FAILED;
-    this->clear_calculated_duv_(status == SequenceStatus::TIMEOUT    ? CalculatedDuvStatus::TIMEOUT
-                                : status == SequenceStatus::OVERFLOW ? CalculatedDuvStatus::OVERFLOW
-                                                                     : CalculatedDuvStatus::FAILED);
-    this->clear_derived_color_(status == SequenceStatus::TIMEOUT    ? DerivedColorStatus::TIMEOUT
-                               : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
-                                                                    : DerivedColorStatus::FAILED);
-    this->publish_nan_default_measurement_outputs_();
-    this->clear_terminal_frame_state_();
+    this->fail_timed_frame_readout_("raw frame command failed",
+                                    status == SequenceStatus::TIMEOUT    ? RawFrameStatus::TIMEOUT
+                                    : status == SequenceStatus::OVERFLOW ? RawFrameStatus::OVERFLOW
+                                                                         : RawFrameStatus::FAILED,
+                                    status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
+                                    : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
+                                                                         : CalibratedFrameStatus::FAILED,
+                                    status == SequenceStatus::TIMEOUT    ? CalculatedDuvStatus::TIMEOUT
+                                    : status == SequenceStatus::OVERFLOW ? CalculatedDuvStatus::OVERFLOW
+                                                                         : CalculatedDuvStatus::FAILED,
+                                    status == SequenceStatus::TIMEOUT    ? DerivedColorStatus::TIMEOUT
+                                    : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
+                                                                         : DerivedColorStatus::FAILED);
     ESP_LOGW(TAG, "AS7261 raw frame readout failed with %s", this->sequence_status_to_string_(status));
     return;
   }
 
   RawFrame frame{};
   if (!parse_raw_frame_(this->first_response_value_(), &frame)) {
-    this->raw_frame_ = RawFrame{};
-    this->raw_frame_status_ = RawFrameStatus::MALFORMED;
-    this->clear_exposure_assessment_();
-    this->calibrated_frame_ = CalibratedFrame{};
-    this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
-    this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
-    this->clear_derived_color_(DerivedColorStatus::MALFORMED);
-    this->publish_nan_default_measurement_outputs_();
-    this->clear_terminal_frame_state_();
+    this->fail_timed_frame_readout_("malformed raw frame response", RawFrameStatus::MALFORMED,
+                                    CalibratedFrameStatus::MALFORMED, CalculatedDuvStatus::MALFORMED,
+                                    DerivedColorStatus::MALFORMED);
     ESP_LOGW(TAG, "Unable to parse AS7261 raw frame response: %s", this->response_buffer_);
+    return;
+  }
+  if (raw_frame_empty_(frame)) {
+    this->fail_timed_frame_readout_("empty all-zero raw frame", RawFrameStatus::MALFORMED,
+                                    CalibratedFrameStatus::MALFORMED, CalculatedDuvStatus::MALFORMED,
+                                    DerivedColorStatus::MALFORMED);
+    ESP_LOGW(TAG, "Rejecting empty all-zero AS7261 raw frame");
     return;
   }
 
@@ -882,11 +847,9 @@ void AS7261Component::handle_finished_raw_frame_readout_(SequenceStatus status) 
   this->update_auto_exposure_policy_();
 
   if (!this->start_calibrated_frame_readout_()) {
-    this->calibrated_frame_ = CalibratedFrame{};
-    this->calibrated_frame_status_ = CalibratedFrameStatus::FAILED;
-    this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
-    this->clear_derived_color_(DerivedColorStatus::FAILED);
-    this->publish_nan_default_measurement_outputs_();
+    this->fail_timed_frame_readout_("unable to start calibrated frame readout", RawFrameStatus::VALID,
+                                    CalibratedFrameStatus::FAILED, CalculatedDuvStatus::FAILED,
+                                    DerivedColorStatus::FAILED);
     ESP_LOGW(TAG, "Unable to start AS7261 calibrated frame readout");
   }
 }
@@ -1417,21 +1380,35 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
 
 void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus status) {
   if (status != SequenceStatus::COMPLETED) {
-    if (this->calibrated_frame_status_ != CalibratedFrameStatus::MALFORMED) {
-      this->calibrated_frame_ = CalibratedFrame{};
-      this->calibrated_frame_status_ = status == SequenceStatus::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
-                                       : status == SequenceStatus::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
-                                                                            : CalibratedFrameStatus::FAILED;
-      this->clear_calculated_duv_(status == SequenceStatus::TIMEOUT    ? CalculatedDuvStatus::TIMEOUT
-                                  : status == SequenceStatus::OVERFLOW ? CalculatedDuvStatus::OVERFLOW
-                                                                       : CalculatedDuvStatus::FAILED);
-      this->clear_derived_color_(status == SequenceStatus::TIMEOUT    ? DerivedColorStatus::TIMEOUT
-                                 : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
-                                                                      : DerivedColorStatus::FAILED);
-    }
-    this->publish_nan_default_measurement_outputs_();
+    const CalibratedFrameStatus calibrated_status =
+        this->calibrated_frame_status_ == CalibratedFrameStatus::MALFORMED ? CalibratedFrameStatus::MALFORMED
+        : status == SequenceStatus::TIMEOUT                                ? CalibratedFrameStatus::TIMEOUT
+        : status == SequenceStatus::OVERFLOW                               ? CalibratedFrameStatus::OVERFLOW
+                                                                           : CalibratedFrameStatus::FAILED;
+    const CalculatedDuvStatus duv_status = calibrated_status == CalibratedFrameStatus::MALFORMED
+                                               ? CalculatedDuvStatus::MALFORMED
+                                           : status == SequenceStatus::TIMEOUT  ? CalculatedDuvStatus::TIMEOUT
+                                           : status == SequenceStatus::OVERFLOW ? CalculatedDuvStatus::OVERFLOW
+                                                                                : CalculatedDuvStatus::FAILED;
+    const DerivedColorStatus derived_status = calibrated_status == CalibratedFrameStatus::MALFORMED
+                                                  ? DerivedColorStatus::MALFORMED
+                                              : status == SequenceStatus::TIMEOUT  ? DerivedColorStatus::TIMEOUT
+                                              : status == SequenceStatus::OVERFLOW ? DerivedColorStatus::OVERFLOW
+                                                                                   : DerivedColorStatus::FAILED;
+    this->fail_timed_frame_readout_("calibrated frame readout failed", RawFrameStatus::VALID, calibrated_status,
+                                    duv_status, derived_status);
     ESP_LOGW(TAG, "AS7261 calibrated frame readout failed with %s",
              this->calibrated_frame_status_to_string_(this->calibrated_frame_status_));
+    return;
+  }
+
+  if (!std::isfinite(this->calibrated_frame_.x) || !std::isfinite(this->calibrated_frame_.y) ||
+      !std::isfinite(this->calibrated_frame_.z) || !std::isfinite(this->calibrated_frame_.lux) ||
+      !std::isfinite(this->calibrated_frame_.cct)) {
+    this->fail_timed_frame_readout_("malformed calibrated frame", RawFrameStatus::VALID,
+                                    CalibratedFrameStatus::MALFORMED, CalculatedDuvStatus::MALFORMED,
+                                    DerivedColorStatus::MALFORMED);
+    ESP_LOGW(TAG, "Rejecting malformed AS7261 calibrated frame");
     return;
   }
 
@@ -2019,15 +1996,80 @@ void AS7261Component::clear_terminal_frame_state_() {
   }
 }
 
-bool AS7261Component::frame_int_ready_() const { return this->int_pin_ != nullptr && this->int_pin_->digital_read(); }
+void AS7261Component::schedule_frame_timed_readout_(uint32_t wait_ms) {
+  this->frame_wait_started_millis_ = millis();
+  this->frame_timed_readout_wait_ms_ = wait_ms;
+  this->frame_state_ = FrameState::WAITING_TIMED_READOUT;
+}
 
-uint32_t AS7261Component::calculate_frame_watchdog_timeout_ms_() const {
-  const uint8_t integration_time = this->manual_exposure_ && this->integration_time_ != 0
-                                       ? this->integration_time_
-                                       : AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
-  const uint32_t conversion_time_us = 2UL * static_cast<uint32_t>(integration_time) * AS7261_INTEGRATION_TIME_STEP_US;
+bool AS7261Component::retry_timed_frame_readout_(const char *reason) {
+  if (this->frame_readout_attempt_ + 1U >= FRAME_TIMED_READOUT_ATTEMPT_LIMIT) {
+    return false;
+  }
+  this->frame_readout_attempt_++;
+  this->raw_frame_ = RawFrame{};
+  this->raw_frame_status_ = RawFrameStatus::INVALID;
+  this->clear_exposure_assessment_();
+  this->calibrated_frame_ = CalibratedFrame{};
+  this->calibrated_frame_status_ = CalibratedFrameStatus::INVALID;
+  this->clear_calculated_duv_(CalculatedDuvStatus::INVALID);
+  this->clear_derived_color_(DerivedColorStatus::INVALID);
+  this->clear_vendor_duv_cie1976_();
+  this->schedule_frame_timed_readout_(FRAME_TIMED_READOUT_RETRY_MARGIN_MS);
+  ESP_LOGW(TAG, "AS7261 timed UART readout produced %s; retrying once after %u ms", reason,
+           static_cast<unsigned>(FRAME_TIMED_READOUT_RETRY_MARGIN_MS));
+  return true;
+}
+
+void AS7261Component::fail_timed_frame_readout_(const char *reason, RawFrameStatus raw_status,
+                                                CalibratedFrameStatus calibrated_status, CalculatedDuvStatus duv_status,
+                                                DerivedColorStatus derived_status) {
+  if (raw_status != RawFrameStatus::VALID) {
+    this->raw_frame_ = RawFrame{};
+  }
+  this->raw_frame_status_ = raw_status;
+  this->clear_exposure_assessment_();
+  this->calibrated_frame_ = CalibratedFrame{};
+  this->calibrated_frame_status_ = calibrated_status;
+  this->clear_calculated_duv_(duv_status);
+  this->clear_derived_color_(derived_status);
+  this->clear_vendor_duv_cie1976_();
+  if (this->retry_timed_frame_readout_(reason)) {
+    return;
+  }
+  this->start_reset_pulse_("timed UART frame readout failed after retry");
+  this->publish_nan_default_measurement_outputs_();
+  this->clear_terminal_frame_state_();
+  this->frame_readout_attempt_ = 0;
+  ESP_LOGW(TAG, "AS7261 timed UART readout failed after retry: %s", reason);
+}
+
+uint32_t AS7261Component::calculate_frame_timed_readout_wait_ms_() const {
+  const uint32_t conversion_time_us =
+      2UL * static_cast<uint32_t>(this->measurement_integration_time_()) * AS7261_INTEGRATION_TIME_STEP_US;
   const uint32_t conversion_time_ms = (conversion_time_us + 999U) / 1000U;
-  return conversion_time_ms + FRAME_WATCHDOG_MARGIN_MS;
+  return conversion_time_ms + FRAME_TIMED_READOUT_MARGIN_MS;
+}
+
+uint8_t AS7261Component::measurement_integration_time_() const {
+  if (this->manual_exposure_ && this->integration_time_ != 0) {
+    return this->integration_time_;
+  }
+  if (this->auto_exposure_policy_.candidate_applied) {
+    const AutoExposureCandidate candidate =
+        normalize_auto_exposure_candidate_(this->auto_exposure_policy_.applied_candidate);
+    return candidate.integration_time;
+  }
+  if (this->auto_exposure_policy_.candidate_initialized) {
+    const AutoExposureCandidate candidate =
+        normalize_auto_exposure_candidate_(this->auto_exposure_policy_.current_candidate);
+    return candidate.integration_time;
+  }
+  return AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
+}
+
+bool AS7261Component::raw_frame_empty_(const RawFrame &frame) {
+  return frame.x == 0 && frame.y == 0 && frame.z == 0 && frame.near_ir == 0 && frame.dark == 0 && frame.clear == 0;
 }
 
 uint8_t AS7261Component::single_bank_probe_integration_time_() const {
@@ -2054,14 +2096,14 @@ uint8_t AS7261Component::calculate_single_bank_probe_interval_() const {
   return static_cast<uint8_t>(interval);
 }
 
-uint32_t AS7261Component::calculate_single_bank_probe_watchdog_timeout_ms_() const {
+uint32_t AS7261Component::calculate_single_bank_probe_timed_readout_wait_ms_() const {
   const uint32_t integration_time_us =
       static_cast<uint32_t>(this->single_bank_probe_integration_time_()) * AS7261_INTEGRATION_TIME_STEP_US;
   const uint32_t conversion_time_us = integration_time_us > SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US
                                           ? integration_time_us
                                           : SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US;
   const uint32_t conversion_time_ms = (conversion_time_us + 999U) / 1000U;
-  return conversion_time_ms + FRAME_WATCHDOG_MARGIN_MS;
+  return conversion_time_ms + FRAME_TIMED_READOUT_MARGIN_MS;
 }
 
 void AS7261Component::handle_finished_diagnostic_command_(DiagnosticState state, TransportResult result) {
@@ -2708,8 +2750,8 @@ const char *AS7261Component::frame_state_to_string_(FrameState state) {
       return "idle";
     case FrameState::TRIGGER_RUNNING:
       return "trigger_running";
-    case FrameState::WAITING_INT:
-      return "waiting_int";
+    case FrameState::WAITING_TIMED_READOUT:
+      return "waiting_timed_readout";
     case FrameState::READY:
       return "ready";
     case FrameState::READOUT_RUNNING:
@@ -2750,8 +2792,8 @@ const char *AS7261Component::single_bank_probe_state_to_string_(SingleBankProbeS
       return "idle";
     case SingleBankProbeState::CONFIGURE_RUNNING:
       return "configure_running";
-    case SingleBankProbeState::WAITING_INT:
-      return "waiting_int";
+    case SingleBankProbeState::WAITING_TIMED_READOUT:
+      return "waiting_timed_readout";
     case SingleBankProbeState::STOP_RUNNING:
       return "stop_running";
     case SingleBankProbeState::RAW_READOUT_RUNNING:
