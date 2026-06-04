@@ -1377,10 +1377,22 @@ bool AS7261Component::start_calibrated_frame_readout_() {
     return false;
   }
 
-  const CommandSequenceStep steps[] = {
-      {"ATDATA", DiagnosticState::IDLE, SequenceFailurePolicy::CONTINUE},
-      {"ATBURST=0", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  CommandSequenceStep steps[COMMAND_SEQUENCE_LENGTH] = {
+      {"ATXYZC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATLUXC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATCCTC", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
+  size_t step_count = 3;
+#ifdef USE_SENSOR
+  if (this->duv_cie1976_sensor_ != nullptr) {
+    steps[step_count] = CommandSequenceStep{"ATDUVC", DiagnosticState::IDLE, SequenceFailurePolicy::CONTINUE};
+    step_count++;
+  }
+#endif
+  steps[step_count] = CommandSequenceStep{"ATDATA", DiagnosticState::IDLE, SequenceFailurePolicy::STOP};
+  step_count++;
+  steps[step_count] = CommandSequenceStep{"ATBURST=0", DiagnosticState::IDLE, SequenceFailurePolicy::STOP};
+  step_count++;
   this->raw_frame_ = RawFrame{};
   this->raw_frame_status_ = RawFrameStatus::INVALID;
   this->clear_exposure_assessment_();
@@ -1391,7 +1403,7 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   this->clear_vendor_duv_cie1976_();
   this->frame_state_ = FrameState::READOUT_RUNNING;
   this->sequence_owner_ = SequenceOwner::CALIBRATED_FRAME_READOUT;
-  if (this->start_command_sequence_(steps, 2)) {
+  if (this->start_command_sequence_(steps, step_count)) {
     return true;
   }
 
@@ -1410,75 +1422,94 @@ bool AS7261Component::start_calibrated_frame_readout_() {
 
 bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result) {
   const char *const command = this->command_sequence_[step_index].command;
+  const bool vendor_duv_step = command != nullptr && std::strcmp(command, "ATDUVC") == 0;
   const bool raw_frame_step = command != nullptr && std::strcmp(command, "ATDATA") == 0;
   const bool burst_stop_step = command != nullptr && std::strcmp(command, "ATBURST=0") == 0;
   if (result != TransportResult::OK) {
-    if (raw_frame_step) {
-      this->raw_frame_ = RawFrame{};
-      this->raw_frame_status_ = result == TransportResult::TIMEOUT    ? RawFrameStatus::TIMEOUT
-                                : result == TransportResult::OVERFLOW ? RawFrameStatus::OVERFLOW
-                                                                      : RawFrameStatus::FAILED;
-      this->clear_exposure_assessment_();
-      this->calibrated_frame_ = CalibratedFrame{};
-      this->calibrated_frame_status_ = result == TransportResult::TIMEOUT    ? CalibratedFrameStatus::TIMEOUT
-                                       : result == TransportResult::OVERFLOW ? CalibratedFrameStatus::OVERFLOW
-                                                                             : CalibratedFrameStatus::FAILED;
-      this->clear_calculated_duv_(result == TransportResult::TIMEOUT    ? CalculatedDuvStatus::TIMEOUT
-                                  : result == TransportResult::OVERFLOW ? CalculatedDuvStatus::OVERFLOW
-                                                                        : CalculatedDuvStatus::FAILED);
-      this->clear_derived_color_(result == TransportResult::TIMEOUT    ? DerivedColorStatus::TIMEOUT
-                                 : result == TransportResult::OVERFLOW ? DerivedColorStatus::OVERFLOW
-                                                                       : DerivedColorStatus::FAILED);
-      return true;
+    if (vendor_duv_step) {
+      this->clear_vendor_duv_cie1976_();
     }
-    return false;
+    return true;
   }
 
   if (burst_stop_step) {
     return true;
   }
-  if (!raw_frame_step) {
+
+  const char *const value = this->first_response_value_();
+  if (raw_frame_step) {
+    RawFrame frame{};
+    if (!parse_raw_frame_(value, &frame) || raw_frame_empty_(frame)) {
+      this->raw_frame_ = RawFrame{};
+      this->raw_frame_status_ = RawFrameStatus::MALFORMED;
+      this->clear_exposure_assessment_();
+      ESP_LOGW(TAG, "Unable to parse AS7261 raw frame response after calibrated readout: %s",
+               value == nullptr ? "<empty>" : value);
+      return false;
+    }
+    this->raw_frame_ = frame;
+    this->raw_frame_status_ = RawFrameStatus::VALID;
+    ESP_LOGD(TAG, "AS7261 raw frame stored: X=%u Y=%u Z=%u NIR=%u Dark=%u Clear=%u",
+             static_cast<unsigned>(this->raw_frame_.x), static_cast<unsigned>(this->raw_frame_.y),
+             static_cast<unsigned>(this->raw_frame_.z), static_cast<unsigned>(this->raw_frame_.near_ir),
+             static_cast<unsigned>(this->raw_frame_.dark), static_cast<unsigned>(this->raw_frame_.clear));
+    if (!this->assess_clear_channel_exposure_()) {
+      ESP_LOGW(TAG, "Unable to assess AS7261 clear-channel exposure");
+    }
+    this->update_auto_exposure_policy_();
+    return true;
+  }
+
+  if (step_index == 0) {
+    CalibratedFrame xyz{};
+    if (!parse_calibrated_xyz_(value, &xyz)) {
+      ESP_LOGW(TAG, "Unable to parse AS7261 calibrated XYZ response: %s", value == nullptr ? "<empty>" : value);
+      this->calibrated_frame_ = CalibratedFrame{};
+      this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+      this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
+      this->clear_derived_color_(DerivedColorStatus::MALFORMED);
+      return false;
+    }
+    this->calibrated_frame_.x = xyz.x;
+    this->calibrated_frame_.y = xyz.y;
+    this->calibrated_frame_.z = xyz.z;
+    return true;
+  }
+
+  float parsed = 0.0f;
+  if (!parse_calibrated_value_(value, &parsed)) {
+    if (vendor_duv_step) {
+      this->clear_vendor_duv_cie1976_();
+      ESP_LOGW(TAG, "Unable to parse AS7261 vendor CIE 1976 DUV response: %s", value == nullptr ? "<empty>" : value);
+      return true;
+    }
+    ESP_LOGW(TAG, "Unable to parse AS7261 calibrated %s response: %s", step_index == 1 ? "lux" : "CCT",
+             value == nullptr ? "<empty>" : value);
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
     this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
     this->clear_derived_color_(DerivedColorStatus::MALFORMED);
     return false;
   }
-
-  RawFrame frame{};
-  const char *const value = this->first_response_value_();
-  if (!parse_raw_frame_(value, &frame) || raw_frame_empty_(frame)) {
-    this->raw_frame_ = RawFrame{};
-    this->raw_frame_status_ = RawFrameStatus::MALFORMED;
-    this->clear_exposure_assessment_();
-    this->calibrated_frame_ = CalibratedFrame{};
-    this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
-    this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
-    this->clear_derived_color_(DerivedColorStatus::MALFORMED);
-    ESP_LOGW(TAG, "Unable to parse AS7261 raw frame response for raw-derived color frame: %s",
-             value == nullptr ? "<empty>" : value);
+  if (step_index == 1) {
+    this->calibrated_frame_.lux = parsed;
+    return true;
+  }
+  if (step_index == 2) {
+    this->calibrated_frame_.cct = parsed;
+    return true;
+  }
+  if (vendor_duv_step) {
+    this->vendor_duv_cie1976_ = parsed;
+    this->vendor_duv_cie1976_valid_ = true;
     return true;
   }
 
-  this->raw_frame_ = frame;
-  this->raw_frame_status_ = RawFrameStatus::VALID;
-  ESP_LOGD(TAG, "AS7261 raw frame stored: X=%u Y=%u Z=%u NIR=%u Dark=%u Clear=%u",
-           static_cast<unsigned>(this->raw_frame_.x), static_cast<unsigned>(this->raw_frame_.y),
-           static_cast<unsigned>(this->raw_frame_.z), static_cast<unsigned>(this->raw_frame_.near_ir),
-           static_cast<unsigned>(this->raw_frame_.dark), static_cast<unsigned>(this->raw_frame_.clear));
-  if (!this->assess_clear_channel_exposure_()) {
-    ESP_LOGW(TAG, "Unable to assess AS7261 clear-channel exposure");
-  }
-  this->update_auto_exposure_policy_();
-  if (!derive_calibrated_frame_from_raw_(this->raw_frame_, &this->calibrated_frame_)) {
-    this->calibrated_frame_ = CalibratedFrame{};
-    this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
-    this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
-    this->clear_derived_color_(DerivedColorStatus::MALFORMED);
-    ESP_LOGW(TAG, "Unable to derive AS7261 color frame from raw XYZ channels");
-    return true;
-  }
-  return true;
+  this->calibrated_frame_ = CalibratedFrame{};
+  this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
+  this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
+  this->clear_derived_color_(DerivedColorStatus::MALFORMED);
+  return false;
 }
 
 void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus status) {
@@ -1512,12 +1543,9 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
   if (!std::isfinite(this->calibrated_frame_.x) || !std::isfinite(this->calibrated_frame_.y) ||
       !std::isfinite(this->calibrated_frame_.z) || !std::isfinite(this->calibrated_frame_.lux) ||
       !std::isfinite(this->calibrated_frame_.cct)) {
-    const RawFrameStatus raw_status = this->raw_frame_status_ == RawFrameStatus::VALID       ? RawFrameStatus::VALID
-                                      : this->raw_frame_status_ == RawFrameStatus::MALFORMED ? RawFrameStatus::MALFORMED
-                                      : this->raw_frame_status_ == RawFrameStatus::TIMEOUT   ? RawFrameStatus::TIMEOUT
-                                                                                             : RawFrameStatus::FAILED;
-    this->fail_timed_frame_readout_("malformed calibrated frame", raw_status, CalibratedFrameStatus::MALFORMED,
-                                    CalculatedDuvStatus::MALFORMED, DerivedColorStatus::MALFORMED);
+    this->fail_timed_frame_readout_("malformed calibrated frame", RawFrameStatus::VALID,
+                                    CalibratedFrameStatus::MALFORMED, CalculatedDuvStatus::MALFORMED,
+                                    DerivedColorStatus::MALFORMED);
     ESP_LOGW(TAG, "Rejecting malformed AS7261 calibrated frame");
     return;
   }
@@ -1548,49 +1576,6 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
 void AS7261Component::clear_calculated_duv_(CalculatedDuvStatus status) {
   this->calculated_duv_frame_ = CalculatedDuvFrame{};
   this->calculated_duv_status_ = status;
-}
-
-bool AS7261Component::derive_calibrated_frame_from_raw_(const RawFrame &raw_frame, CalibratedFrame *calibrated_frame) {
-  if (calibrated_frame == nullptr) {
-    return false;
-  }
-
-  const float dark = static_cast<float>(raw_frame.dark);
-  const float x = std::fmax(0.0f, static_cast<float>(raw_frame.x) - dark);
-  const float y = std::fmax(0.0f, static_cast<float>(raw_frame.y) - dark);
-  const float z = std::fmax(0.0f, static_cast<float>(raw_frame.z) - dark);
-  const float sum = x + y + z;
-  if (!std::isfinite(sum) || sum <= CIE_1960_UCS_DENOMINATOR_EPSILON) {
-    return false;
-  }
-
-  const float chromaticity_x = x / sum;
-  const float chromaticity_y = y / sum;
-  if (!std::isfinite(chromaticity_x) || !std::isfinite(chromaticity_y) ||
-      chromaticity_y <= CIE_1960_UCS_DENOMINATOR_EPSILON) {
-    return false;
-  }
-
-  const float n_denominator = 0.1858f - chromaticity_y;
-  if (!std::isfinite(n_denominator) || std::fabs(n_denominator) <= CIE_1960_UCS_DENOMINATOR_EPSILON) {
-    return false;
-  }
-  const float n = (chromaticity_x - 0.3320f) / n_denominator;
-  const float cct = (-449.0f * n * n * n) + (3525.0f * n * n) - (6823.3f * n) + 5520.33f;
-  if (!std::isfinite(cct) || cct < PLANCKIAN_LOCUS_MIN_CCT_K || cct > PLANCKIAN_LOCUS_MAX_CCT_K) {
-    return false;
-  }
-
-  CalibratedFrame parsed{};
-  parsed.x = x;
-  parsed.y = y;
-  parsed.z = z;
-  parsed.lux = y;
-  parsed.cct = cct;
-  *calibrated_frame = parsed;
-  ESP_LOGD(TAG, "AS7261 raw-derived color frame stored: X=%f Y=%f Z=%f Lux=%f CCT=%f", parsed.x, parsed.y, parsed.z,
-           parsed.lux, parsed.cct);
-  return true;
 }
 
 bool AS7261Component::derive_calculated_duv_() {
