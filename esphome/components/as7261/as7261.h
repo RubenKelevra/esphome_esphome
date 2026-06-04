@@ -338,7 +338,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr size_t LINE_BUFFER_LENGTH = 96;
   static constexpr size_t RESPONSE_BUFFER_LENGTH = 192;
   static constexpr size_t ATXYZC_RAW_DEBUG_BUFFER_LENGTH = 256;
-  static constexpr size_t COMMAND_SEQUENCE_LENGTH = 4;
+  static constexpr size_t COMMAND_SEQUENCE_LENGTH = 5;
   static constexpr uint32_t COMMAND_TIMEOUT_MS = 1000;
   static constexpr uint32_t RESET_PULSE_MS = 2;
   static constexpr float DEVICE_TEMPERATURE_UNSAFE_C = 76.5f;
