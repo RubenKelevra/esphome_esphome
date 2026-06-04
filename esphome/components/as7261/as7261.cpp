@@ -783,11 +783,9 @@ void AS7261Component::handle_finished_single_bank_probe_raw_readout_(SequenceSta
   this->single_bank_probe_raw_frame_ = frame;
   this->single_bank_probe_status_ = SingleBankProbeStatus::VALID;
   this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
-  ESP_LOGD(TAG, "AS7261 single-bank probe raw frame stored: X=%u Y=%u Z=%u NIR=%u Dark=%u Clear=%u",
+  ESP_LOGD(TAG, "AS7261 single-bank probe raw frame stored: X=%u Y=%u Dark=%u Clear=%u",
            static_cast<unsigned>(this->single_bank_probe_raw_frame_.x),
            static_cast<unsigned>(this->single_bank_probe_raw_frame_.y),
-           static_cast<unsigned>(this->single_bank_probe_raw_frame_.z),
-           static_cast<unsigned>(this->single_bank_probe_raw_frame_.near_ir),
            static_cast<unsigned>(this->single_bank_probe_raw_frame_.dark),
            static_cast<unsigned>(this->single_bank_probe_raw_frame_.clear));
   if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
@@ -1155,7 +1153,14 @@ bool AS7261Component::update_auto_exposure_policy_() {
     return false;
   }
 
-  if (assessment.guidance == ExposureAssessmentGuidance::ACCEPT) {
+  const bool at_max_auto_exposure =
+      policy.current_candidate.gain == AS7261_GAIN_64X &&
+      policy.current_candidate.integration_time >= AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
+  const bool trusted_but_too_dark_at_max = at_max_auto_exposure &&
+                                           assessment.guidance == ExposureAssessmentGuidance::INCREASE &&
+                                           assessment.clear_percent >= CLEAR_TRUSTED_LOW_PERCENT;
+
+  if (assessment.guidance == ExposureAssessmentGuidance::ACCEPT || trusted_but_too_dark_at_max) {
     policy.action = AutoExposurePolicyAction::ACCEPT_CURRENT;
     policy.accepted = true;
   } else {
