@@ -533,12 +533,10 @@ bool AS7261Component::start_one_shot_frame_trigger_() {
   }
   const CommandSequenceStep steps[] = {
       {"ATTCSMD=2", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
-      {"ATINTRVL=1", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
-      {"ATBURST=1", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
   this->frame_state_ = FrameState::TRIGGER_RUNNING;
   this->sequence_owner_ = SequenceOwner::FRAME_TRIGGER;
-  if (this->start_command_sequence_(steps, 3)) {
+  if (this->start_command_sequence_(steps, 1)) {
     return true;
   }
   this->sequence_owner_ = SequenceOwner::NONE;
@@ -555,7 +553,7 @@ void AS7261Component::handle_finished_frame_trigger_(SequenceStatus status) {
   }
   this->frame_readout_attempt_ = 0;
   this->schedule_frame_timed_readout_(this->calculate_frame_timed_readout_wait_ms_());
-  ESP_LOGD(TAG, "AS7261 final Mode 2 burst started; waiting %u ms before timed UART readout",
+  ESP_LOGD(TAG, "AS7261 final Mode 2 conversion started; waiting %u ms before timed UART calibrated readout",
            static_cast<unsigned>(this->frame_timed_readout_wait_ms_));
 }
 
@@ -607,7 +605,7 @@ void AS7261Component::poll_frame_trigger_() {
   }
   if (millis() - this->frame_wait_started_millis_ >= this->frame_timed_readout_wait_ms_) {
     this->frame_state_ = FrameState::READY;
-    ESP_LOGD(TAG, "AS7261 timed UART readout window elapsed after %u ms; starting readout with burst still enabled",
+    ESP_LOGD(TAG, "AS7261 timed UART readout window elapsed after %u ms; starting calibrated readout",
              static_cast<unsigned>(this->frame_timed_readout_wait_ms_));
   }
 }
@@ -1390,8 +1388,6 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   }
 #endif
   steps[step_count] = CommandSequenceStep{"ATDATA", DiagnosticState::IDLE, SequenceFailurePolicy::STOP};
-  step_count++;
-  steps[step_count] = CommandSequenceStep{"ATBURST=0", DiagnosticState::IDLE, SequenceFailurePolicy::STOP};
   step_count++;
   this->raw_frame_ = RawFrame{};
   this->raw_frame_status_ = RawFrameStatus::INVALID;
