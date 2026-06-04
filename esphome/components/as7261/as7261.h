@@ -344,7 +344,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr uint32_t FRAME_TIMED_READOUT_MARGIN_MS = 250;
   static constexpr uint32_t FRAME_TIMED_READOUT_RETRY_MARGIN_MS = 1000;
   static constexpr uint8_t FRAME_TIMED_READOUT_ATTEMPT_LIMIT = 2;
-  static constexpr uint8_t SINGLE_BANK_PROBE_SENSOR_MODE = 1;
+  static constexpr uint8_t SINGLE_BANK_PROBE_SENSOR_MODE = 0;
   static constexpr uint32_t SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US = 50000;
   static constexpr float DEFAULT_OKLAB_REFERENCE_ILLUMINANCE_LX = 1000.0f;
   static constexpr float OKLCH_ZERO_CHROMA_HUE_DEGREES = 0.0f;
