@@ -532,7 +532,7 @@ bool AS7261Component::start_one_shot_frame_trigger_() {
     return false;
   }
   const CommandSequenceStep steps[] = {
-      {"ATTCSMD=3", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATTCSMD=2", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
   this->frame_state_ = FrameState::TRIGGER_RUNNING;
   this->sequence_owner_ = SequenceOwner::FRAME_TRIGGER;
@@ -553,7 +553,7 @@ void AS7261Component::handle_finished_frame_trigger_(SequenceStatus status) {
   }
   this->frame_readout_attempt_ = 0;
   this->schedule_frame_timed_readout_(this->calculate_frame_timed_readout_wait_ms_());
-  ESP_LOGD(TAG, "AS7261 final Mode 3 one-shot started; waiting %u ms before timed UART calibrated readout",
+  ESP_LOGD(TAG, "AS7261 final Mode 2 conversion started; waiting %u ms before timed UART calibrated readout",
            static_cast<unsigned>(this->frame_timed_readout_wait_ms_));
 }
 
