@@ -183,6 +183,16 @@ void AS7261Component::poll_command_sequence_() {
   if (!this->sequence_active_() || this->transport_busy_()) {
     return;
   }
+  if (this->sequence_step_retry_wait_active_) {
+    if (millis() - this->sequence_step_retry_wait_started_millis_ < this->sequence_step_retry_wait_ms_) {
+      return;
+    }
+    this->sequence_step_retry_wait_active_ = false;
+    if (!this->start_current_sequence_step_()) {
+      this->finish_command_sequence_(SequenceStatus::FAILED);
+    }
+    return;
+  }
   this->handle_finished_sequence_step_();
 }
 
@@ -201,6 +211,9 @@ bool AS7261Component::start_command_sequence_(const CommandSequenceStep *steps, 
   this->sequence_step_count_ = step_count;
   this->sequence_step_index_ = 0;
   this->sequence_status_ = SequenceStatus::RUNNING;
+  this->sequence_step_retry_wait_active_ = false;
+  this->sequence_step_retry_wait_ms_ = 0;
+  this->sequence_step_retry_wait_started_millis_ = 0;
 
   if (this->start_current_sequence_step_()) {
     return true;
@@ -224,6 +237,17 @@ bool AS7261Component::start_current_sequence_step_() {
   return false;
 }
 
+bool AS7261Component::schedule_current_sequence_step_retry_(uint32_t wait_ms) {
+  if (!this->sequence_active_() || this->sequence_step_index_ >= this->sequence_step_count_ || wait_ms == 0) {
+    return false;
+  }
+  this->sequence_step_retry_wait_ms_ = wait_ms;
+  this->sequence_step_retry_wait_started_millis_ = millis();
+  this->sequence_step_retry_wait_active_ = true;
+  this->diagnostic_state_ = DiagnosticState::IDLE;
+  return true;
+}
+
 void AS7261Component::handle_finished_sequence_step_() {
   if (this->sequence_step_index_ >= this->sequence_step_count_) {
     this->finish_command_sequence_(SequenceStatus::COMPLETED);
@@ -238,6 +262,9 @@ void AS7261Component::handle_finished_sequence_step_() {
   if (this->sequence_owner_ == SequenceOwner::CALIBRATED_FRAME_READOUT &&
       !this->handle_finished_calibrated_frame_command_(this->sequence_step_index_, result)) {
     this->finish_command_sequence_(SequenceStatus::FAILED);
+    return;
+  }
+  if (this->sequence_step_retry_wait_active_) {
     return;
   }
 
@@ -265,6 +292,10 @@ void AS7261Component::finish_command_sequence_(SequenceStatus status) {
   this->sequence_status_ = status;
   this->sequence_step_count_ = 0;
   this->sequence_step_index_ = 0;
+  this->sequence_step_retry_wait_active_ = false;
+  this->sequence_step_retry_wait_ms_ = 0;
+  this->sequence_step_retry_wait_started_millis_ = 0;
+  this->calibrated_xyz_nan_retry_count_ = 0;
   this->diagnostic_state_ = DiagnosticState::IDLE;
   this->sequence_owner_ = SequenceOwner::NONE;
   ESP_LOGD(TAG, "AS7261 command sequence finished with %s", this->sequence_status_to_string_(status));
@@ -1387,6 +1418,7 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   this->clear_exposure_assessment_();
   this->calibrated_frame_ = CalibratedFrame{};
   this->calibrated_frame_status_ = CalibratedFrameStatus::RUNNING;
+  this->calibrated_xyz_nan_retry_count_ = 0;
   this->clear_calculated_duv_(CalculatedDuvStatus::INVALID);
   this->clear_derived_color_(DerivedColorStatus::INVALID);
   this->clear_vendor_duv_cie1976_();
@@ -1461,6 +1493,21 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
       this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
       this->clear_derived_color_(DerivedColorStatus::MALFORMED);
       return true;
+    }
+    if ((!std::isfinite(xyz.x) || !std::isfinite(xyz.y) || !std::isfinite(xyz.z)) &&
+        this->calibrated_xyz_nan_retry_count_ < CALIBRATED_XYZ_NAN_RETRY_LIMIT) {
+      this->calibrated_xyz_nan_retry_count_++;
+      const uint32_t retry_wait_ms = this->calculate_single_integration_wait_ms_();
+      if (this->schedule_current_sequence_step_retry_(retry_wait_ms)) {
+        ESP_LOGW(TAG, "AS7261 calibrated XYZ contains NaN; retrying ATXYZC after %u ms (%u/%u)",
+                 static_cast<unsigned>(retry_wait_ms), static_cast<unsigned>(this->calibrated_xyz_nan_retry_count_),
+                 static_cast<unsigned>(CALIBRATED_XYZ_NAN_RETRY_LIMIT));
+        return true;
+      }
+    }
+    if (!std::isfinite(xyz.x) || !std::isfinite(xyz.y) || !std::isfinite(xyz.z)) {
+      ESP_LOGW(TAG, "AS7261 calibrated XYZ still contains NaN after %u retry attempt(s); continuing readout",
+               static_cast<unsigned>(this->calibrated_xyz_nan_retry_count_));
     }
     this->calibrated_frame_.x = xyz.x;
     this->calibrated_frame_.y = xyz.y;
@@ -2188,6 +2235,12 @@ uint32_t AS7261Component::calculate_frame_timed_readout_wait_ms_() const {
       2UL * static_cast<uint32_t>(this->measurement_integration_time_()) * AS7261_INTEGRATION_TIME_STEP_US;
   const uint32_t conversion_time_ms = (conversion_time_us + 999U) / 1000U;
   return conversion_time_ms + FRAME_TIMED_READOUT_MARGIN_MS;
+}
+
+uint32_t AS7261Component::calculate_single_integration_wait_ms_() const {
+  const uint32_t conversion_time_us =
+      static_cast<uint32_t>(this->measurement_integration_time_()) * AS7261_INTEGRATION_TIME_STEP_US;
+  return (conversion_time_us + 999U) / 1000U;
 }
 
 uint8_t AS7261Component::measurement_integration_time_() const {

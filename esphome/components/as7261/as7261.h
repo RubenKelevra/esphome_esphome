@@ -342,6 +342,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr uint32_t FRAME_TIMED_READOUT_MARGIN_MS = 250;
   static constexpr uint32_t FRAME_TIMED_READOUT_RETRY_MARGIN_MS = 1000;
   static constexpr uint8_t FRAME_TIMED_READOUT_ATTEMPT_LIMIT = 2;
+  static constexpr uint8_t CALIBRATED_XYZ_NAN_RETRY_LIMIT = 2;
   static constexpr uint8_t SINGLE_BANK_PROBE_SENSOR_MODE = 0;
   static constexpr uint32_t SINGLE_BANK_PROBE_REPEAT_INTERVAL_MIN_US = 50000;
   static constexpr float DEFAULT_OKLAB_REFERENCE_ILLUMINANCE_LX = 1000.0f;
@@ -395,6 +396,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void poll_command_sequence_();
   bool start_command_sequence_(const CommandSequenceStep *steps, size_t step_count);
   bool start_current_sequence_step_();
+  bool schedule_current_sequence_step_retry_(uint32_t wait_ms);
   void handle_finished_sequence_step_();
   void finish_command_sequence_(SequenceStatus status);
   bool start_diagnostic_readout_();
@@ -470,6 +472,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void fail_timed_frame_readout_(const char *reason, RawFrameStatus raw_status, CalibratedFrameStatus calibrated_status,
                                  CalculatedDuvStatus duv_status, DerivedColorStatus derived_status);
   uint32_t calculate_frame_timed_readout_wait_ms_() const;
+  uint32_t calculate_single_integration_wait_ms_() const;
   uint8_t measurement_integration_time_() const;
   static bool raw_frame_empty_(const RawFrame &frame);
   uint8_t single_bank_probe_integration_time_() const;
@@ -542,6 +545,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   size_t sequence_step_index_{0};
   uint32_t transport_started_millis_{0};
   uint32_t transport_timeout_ms_{COMMAND_TIMEOUT_MS};
+  uint32_t sequence_step_retry_wait_started_millis_{0};
+  uint32_t sequence_step_retry_wait_ms_{0};
   char command_buffer_[COMMAND_BUFFER_LENGTH]{};
   char line_buffer_[LINE_BUFFER_LENGTH]{};
   size_t line_length_{0};
@@ -554,6 +559,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   uint32_t frame_wait_started_millis_{0};
   uint32_t frame_timed_readout_wait_ms_{0};
   uint8_t frame_readout_attempt_{0};
+  uint8_t calibrated_xyz_nan_retry_count_{0};
+  bool sequence_step_retry_wait_active_{false};
   uint32_t single_bank_probe_wait_started_millis_{0};
   uint32_t single_bank_probe_timed_readout_wait_ms_{0};
   uint8_t response_line_count_{0};
