@@ -532,7 +532,7 @@ bool AS7261Component::start_one_shot_frame_trigger_() {
     return false;
   }
   const CommandSequenceStep steps[] = {
-      {"ATTCSMD=3", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATTCSMD=2", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
   this->frame_state_ = FrameState::TRIGGER_RUNNING;
   this->sequence_owner_ = SequenceOwner::FRAME_TRIGGER;
