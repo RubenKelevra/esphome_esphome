@@ -458,6 +458,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static bool calibrated_frame_valid_for_precision_(const CalibratedFrame &frame);
   static float median3_(float a, float b, float c);
   static float precision_field_error_(float value, float median);
+  static bool derive_calibrated_frame_from_raw_(const RawFrame &raw_frame, CalibratedFrame *calibrated_frame);
   bool derive_calculated_duv_();
   bool derive_oklab_oklch_();
   static bool calibrated_frame_valid_for_duv_(const CalibratedFrame &frame);
