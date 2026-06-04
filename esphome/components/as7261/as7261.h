@@ -359,7 +359,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr float RAW_CLEAR_FULL_SCALE = 65535.0f;
   static constexpr float CLEAR_PERCENT_SCALE = 100.0f;
   static constexpr float CLEAR_OVEREXPOSED_PERCENT = 98.0f;
-  static constexpr float CLEAR_NEAR_SATURATION_PERCENT = 88.0f;
+  static constexpr float CLEAR_NEAR_SATURATION_PERCENT = 40.0f;
   static constexpr float CLEAR_TARGET_LOW_PERCENT = 20.0f;
   static constexpr float CLEAR_TRUSTED_LOW_PERCENT = 5.0f;
   static constexpr uint8_t AUTO_EXPOSURE_MIN_INTEGRATION_TIME = 1;
