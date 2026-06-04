@@ -12,35 +12,6 @@ namespace esphome::as7261 {
 
 static const char *const TAG = "as7261";
 
-static void temp_log_atxyzc_hex_bytes_(const char *label, const uint8_t *bytes, size_t length, bool overflow) {
-  static constexpr size_t BYTES_PER_LINE = 16;
-  if (bytes == nullptr || length == 0) {
-    ESP_LOGW(TAG, "TEMP AS7261 ATXYZC %s raw bytes%s: <empty>", label, overflow ? " (truncated)" : "");
-    return;
-  }
-
-  for (size_t offset = 0; offset < length; offset += BYTES_PER_LINE) {
-    const size_t chunk_length = std::min(BYTES_PER_LINE, length - offset);
-    char hex[BYTES_PER_LINE * 3]{};
-    size_t hex_offset = 0;
-    for (size_t i = 0; i < chunk_length; i++) {
-      const int written = std::snprintf(hex + hex_offset, sizeof(hex) - hex_offset, "%s%02X", i == 0 ? "" : " ",
-                                        static_cast<unsigned>(bytes[offset + i]));
-      if (written <= 0) {
-        break;
-      }
-      hex_offset += static_cast<size_t>(written);
-      if (hex_offset >= sizeof(hex)) {
-        hex[sizeof(hex) - 1] = '\0';
-        break;
-      }
-    }
-    ESP_LOGW(TAG, "TEMP AS7261 ATXYZC %s raw bytes %u..%u of %u%s: %s", label, static_cast<unsigned>(offset),
-             static_cast<unsigned>(offset + chunk_length), static_cast<unsigned>(length),
-             overflow ? " (truncated)" : "", hex);
-  }
-}
-
 void AS7261Component::setup() {
   if (this->int_pin_ != nullptr) {
     this->int_pin_->setup();
@@ -174,8 +145,6 @@ bool AS7261Component::begin_at_command_(const char *command, uint32_t timeout_ms
   }
   this->command_buffer_[command_length] = '\0';
 
-  this->temp_atxyzc_raw_length_ = 0;
-  this->temp_atxyzc_raw_overflow_ = false;
   this->clear_transport_buffers_();
   this->drain_uart_();
   this->transport_state_ = TransportState::WAITING_RESPONSE;
@@ -190,13 +159,6 @@ bool AS7261Component::begin_at_command_(const char *command, uint32_t timeout_ms
 }
 
 void AS7261Component::poll_transport_() {
-  if (this->transport_state_ == TransportState::RESET_ASSERTED) {
-    if (millis() - this->reset_started_millis_ >= RESET_PULSE_MS) {
-      this->release_reset_pulse_();
-    }
-    return;
-  }
-
   if (this->transport_state_ != TransportState::WAITING_RESPONSE) {
     return;
   }
@@ -1572,15 +1534,19 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
     return;
   }
 
-  if (this->calibrated_frame_status_ == CalibratedFrameStatus::MALFORMED || !std::isfinite(this->calibrated_frame_.x) ||
-      !std::isfinite(this->calibrated_frame_.y) || !std::isfinite(this->calibrated_frame_.z) ||
-      !std::isfinite(this->calibrated_frame_.lux) || !std::isfinite(this->calibrated_frame_.cct)) {
+  if (this->calibrated_frame_status_ == CalibratedFrameStatus::MALFORMED) {
     const RawFrameStatus raw_status =
         this->raw_frame_status_ == RawFrameStatus::VALID ? RawFrameStatus::VALID : RawFrameStatus::FAILED;
     this->fail_timed_frame_readout_("malformed calibrated frame", raw_status, CalibratedFrameStatus::MALFORMED,
                                     CalculatedDuvStatus::MALFORMED, DerivedColorStatus::MALFORMED);
     ESP_LOGW(TAG, "Rejecting malformed AS7261 calibrated frame");
     return;
+  }
+
+  if (!std::isfinite(this->calibrated_frame_.x) || !std::isfinite(this->calibrated_frame_.y) ||
+      !std::isfinite(this->calibrated_frame_.z) || !std::isfinite(this->calibrated_frame_.lux) ||
+      !std::isfinite(this->calibrated_frame_.cct)) {
+    ESP_LOGW(TAG, "AS7261 calibrated frame contains NaN values; publishing because exposure/readout is valid");
   }
 
   if (!this->max_exposure_low_light_final_frame_valid_()) {
@@ -1735,15 +1701,8 @@ void AS7261Component::clear_derived_color_(DerivedColorStatus status) {
 
 bool AS7261Component::default_measurement_outputs_publishable_() const {
   return this->raw_frame_status_ == RawFrameStatus::VALID &&
-         this->calibrated_frame_status_ == CalibratedFrameStatus::VALID &&
-         this->calculated_duv_status_ == CalculatedDuvStatus::VALID &&
-         this->derived_color_status_ == DerivedColorStatus::VALID && this->device_temperature_valid_ &&
-         !this->device_temperature_invalid_ && !this->device_temperature_unsafe_ &&
-         std::isfinite(this->calibrated_frame_.cct) && std::isfinite(this->calibrated_frame_.lux) &&
-         std::isfinite(this->calculated_duv_frame_.duv) && std::isfinite(this->derived_color_frame_.oklab.l) &&
-         std::isfinite(this->derived_color_frame_.oklab.a) && std::isfinite(this->derived_color_frame_.oklab.b) &&
-         std::isfinite(this->derived_color_frame_.oklch.l) && std::isfinite(this->derived_color_frame_.oklch.c) &&
-         std::isfinite(this->derived_color_frame_.oklch.h);
+         this->calibrated_frame_status_ == CalibratedFrameStatus::VALID && this->device_temperature_valid_ &&
+         !this->device_temperature_invalid_ && !this->device_temperature_unsafe_;
 }
 
 void AS7261Component::publish_default_measurement_outputs_() {
@@ -2360,13 +2319,6 @@ void AS7261Component::handle_device_temperature_response_() {
 }
 
 void AS7261Component::handle_uart_byte_(uint8_t byte) {
-  if (std::strcmp(this->command_buffer_, "ATXYZC") == 0) {
-    if (this->temp_atxyzc_raw_length_ < sizeof(this->temp_atxyzc_raw_bytes_)) {
-      this->temp_atxyzc_raw_bytes_[this->temp_atxyzc_raw_length_++] = byte;
-    } else {
-      this->temp_atxyzc_raw_overflow_ = true;
-    }
-  }
   if (byte == '\r') {
     return;
   }
@@ -2475,13 +2427,6 @@ void AS7261Component::complete_transport_(TransportResult result) {
   this->last_transport_result_ = result;
   this->transport_state_ = TransportState::IDLE;
   this->line_length_ = 0;
-
-  if (std::strcmp(this->command_buffer_, "ATXYZC") == 0) {
-    temp_log_atxyzc_hex_bytes_("UART", this->temp_atxyzc_raw_bytes_, this->temp_atxyzc_raw_length_,
-                               this->temp_atxyzc_raw_overflow_);
-    temp_log_atxyzc_hex_bytes_("assembled response_buffer", reinterpret_cast<const uint8_t *>(this->response_buffer_),
-                               this->response_length_, false);
-  }
 
   switch (result) {
     case TransportResult::OK:
@@ -2760,6 +2705,12 @@ bool AS7261Component::parse_finite_float_(const char *begin, const char *end, fl
     return false;
   }
 
+  if (end - begin == 3 && (begin[0] == 'N' || begin[0] == 'n') && (begin[1] == 'A' || begin[1] == 'a') &&
+      (begin[2] == 'N' || begin[2] == 'n')) {
+    *value = NAN;
+    return true;
+  }
+
   const char *cursor = begin;
   bool negative = false;
   if (*cursor == '+' || *cursor == '-') {
@@ -2868,24 +2819,14 @@ int8_t AS7261Component::digit_value_(char value, uint8_t base) {
 }
 
 void AS7261Component::start_reset_pulse_(const char *reason) {
-  if (this->reset_pin_ == nullptr || this->transport_state_ == TransportState::RESET_ASSERTED) {
-    return;
-  }
-  this->clear_transport_buffers_();
-  this->reset_pin_->digital_write(true);
-  this->reset_started_millis_ = millis();
-  this->transport_state_ = TransportState::RESET_ASSERTED;
   if (reason != nullptr) {
-    ESP_LOGD(TAG, "AS7261 reset pulse started: %s", reason);
+    ESP_LOGW(TAG, "AS7261 reset skipped: %s", reason);
   }
 }
 
 void AS7261Component::release_reset_pulse_() {
   if (this->reset_pin_ != nullptr) {
     this->reset_pin_->digital_write(false);
-  }
-  if (this->transport_state_ == TransportState::RESET_ASSERTED) {
-    this->transport_state_ = TransportState::IDLE;
   }
 }
 

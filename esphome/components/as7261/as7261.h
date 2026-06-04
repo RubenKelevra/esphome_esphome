@@ -94,7 +94,6 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   enum class TransportState : uint8_t {
     IDLE,
     WAITING_RESPONSE,
-    RESET_ASSERTED,
   };
 
   enum class TransportResult : uint8_t {
@@ -335,10 +334,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr size_t COMMAND_BUFFER_LENGTH = 48;
   static constexpr size_t LINE_BUFFER_LENGTH = 96;
   static constexpr size_t RESPONSE_BUFFER_LENGTH = 192;
-  static constexpr size_t ATXYZC_RAW_DEBUG_BUFFER_LENGTH = 256;
   static constexpr size_t COMMAND_SEQUENCE_LENGTH = 6;
   static constexpr uint32_t COMMAND_TIMEOUT_MS = 1000;
-  static constexpr uint32_t RESET_PULSE_MS = 2;
   static constexpr float DEVICE_TEMPERATURE_UNSAFE_C = 76.5f;
   static constexpr uint32_t AS7261_INTEGRATION_TIME_STEP_US = 2800;
   static constexpr uint8_t AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME = 255;
@@ -545,7 +542,6 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   size_t sequence_step_index_{0};
   uint32_t transport_started_millis_{0};
   uint32_t transport_timeout_ms_{COMMAND_TIMEOUT_MS};
-  uint32_t reset_started_millis_{0};
   char command_buffer_[COMMAND_BUFFER_LENGTH]{};
   char line_buffer_[LINE_BUFFER_LENGTH]{};
   size_t line_length_{0};
@@ -561,9 +557,6 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   uint32_t single_bank_probe_wait_started_millis_{0};
   uint32_t single_bank_probe_timed_readout_wait_ms_{0};
   uint8_t response_line_count_{0};
-  uint8_t temp_atxyzc_raw_bytes_[ATXYZC_RAW_DEBUG_BUFFER_LENGTH]{};
-  size_t temp_atxyzc_raw_length_{0};
-  bool temp_atxyzc_raw_overflow_{false};
   RawFrame raw_frame_{};
   RawFrameStatus raw_frame_status_{RawFrameStatus::INVALID};
   RawFrame single_bank_probe_raw_frame_{};
