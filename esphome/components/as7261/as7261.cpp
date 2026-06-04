@@ -12,6 +12,35 @@ namespace esphome::as7261 {
 
 static const char *const TAG = "as7261";
 
+static void temp_log_atxyzc_hex_bytes_(const char *label, const uint8_t *bytes, size_t length, bool overflow) {
+  static constexpr size_t BYTES_PER_LINE = 16;
+  if (bytes == nullptr || length == 0) {
+    ESP_LOGW(TAG, "TEMP AS7261 ATXYZC %s raw bytes%s: <empty>", label, overflow ? " (truncated)" : "");
+    return;
+  }
+
+  for (size_t offset = 0; offset < length; offset += BYTES_PER_LINE) {
+    const size_t chunk_length = std::min(BYTES_PER_LINE, length - offset);
+    char hex[BYTES_PER_LINE * 3]{};
+    size_t hex_offset = 0;
+    for (size_t i = 0; i < chunk_length; i++) {
+      const int written = std::snprintf(hex + hex_offset, sizeof(hex) - hex_offset, "%s%02X", i == 0 ? "" : " ",
+                                        static_cast<unsigned>(bytes[offset + i]));
+      if (written <= 0) {
+        break;
+      }
+      hex_offset += static_cast<size_t>(written);
+      if (hex_offset >= sizeof(hex)) {
+        hex[sizeof(hex) - 1] = '\0';
+        break;
+      }
+    }
+    ESP_LOGW(TAG, "TEMP AS7261 ATXYZC %s raw bytes %u..%u of %u%s: %s", label, static_cast<unsigned>(offset),
+             static_cast<unsigned>(offset + chunk_length), static_cast<unsigned>(length),
+             overflow ? " (truncated)" : "", hex);
+  }
+}
+
 void AS7261Component::setup() {
   if (this->int_pin_ != nullptr) {
     this->int_pin_->setup();
@@ -145,6 +174,8 @@ bool AS7261Component::begin_at_command_(const char *command, uint32_t timeout_ms
   }
   this->command_buffer_[command_length] = '\0';
 
+  this->temp_atxyzc_raw_length_ = 0;
+  this->temp_atxyzc_raw_overflow_ = false;
   this->clear_transport_buffers_();
   this->drain_uart_();
   this->transport_state_ = TransportState::WAITING_RESPONSE;
@@ -2238,6 +2269,13 @@ void AS7261Component::handle_device_temperature_response_() {
 }
 
 void AS7261Component::handle_uart_byte_(uint8_t byte) {
+  if (std::strcmp(this->command_buffer_, "ATXYZC") == 0) {
+    if (this->temp_atxyzc_raw_length_ < sizeof(this->temp_atxyzc_raw_bytes_)) {
+      this->temp_atxyzc_raw_bytes_[this->temp_atxyzc_raw_length_++] = byte;
+    } else {
+      this->temp_atxyzc_raw_overflow_ = true;
+    }
+  }
   if (byte == '\r') {
     return;
   }
@@ -2346,6 +2384,13 @@ void AS7261Component::complete_transport_(TransportResult result) {
   this->last_transport_result_ = result;
   this->transport_state_ = TransportState::IDLE;
   this->line_length_ = 0;
+
+  if (std::strcmp(this->command_buffer_, "ATXYZC") == 0) {
+    temp_log_atxyzc_hex_bytes_("UART", this->temp_atxyzc_raw_bytes_, this->temp_atxyzc_raw_length_,
+                               this->temp_atxyzc_raw_overflow_);
+    temp_log_atxyzc_hex_bytes_("assembled response_buffer", reinterpret_cast<const uint8_t *>(this->response_buffer_),
+                               this->response_length_, false);
+  }
 
   switch (result) {
     case TransportResult::OK:

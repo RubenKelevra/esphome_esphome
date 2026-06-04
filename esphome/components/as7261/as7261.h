@@ -335,6 +335,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr size_t COMMAND_BUFFER_LENGTH = 48;
   static constexpr size_t LINE_BUFFER_LENGTH = 96;
   static constexpr size_t RESPONSE_BUFFER_LENGTH = 192;
+  static constexpr size_t ATXYZC_RAW_DEBUG_BUFFER_LENGTH = 256;
   static constexpr size_t COMMAND_SEQUENCE_LENGTH = 4;
   static constexpr uint32_t COMMAND_TIMEOUT_MS = 1000;
   static constexpr uint32_t RESET_PULSE_MS = 2;
@@ -558,6 +559,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   uint32_t single_bank_probe_wait_started_millis_{0};
   uint32_t single_bank_probe_timed_readout_wait_ms_{0};
   uint8_t response_line_count_{0};
+  uint8_t temp_atxyzc_raw_bytes_[ATXYZC_RAW_DEBUG_BUFFER_LENGTH]{};
+  size_t temp_atxyzc_raw_length_{0};
+  bool temp_atxyzc_raw_overflow_{false};
   RawFrame raw_frame_{};
   RawFrameStatus raw_frame_status_{RawFrameStatus::INVALID};
   RawFrame single_bank_probe_raw_frame_{};
