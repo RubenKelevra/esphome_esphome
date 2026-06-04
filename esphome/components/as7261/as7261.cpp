@@ -997,11 +997,60 @@ void AS7261Component::handle_finished_auto_exposure_probe_() {
     return;
   }
 
+  const AutoExposureCandidate current_candidate = normalize_auto_exposure_candidate_(policy.current_candidate);
+  const AutoExposureCandidate ordinary_next_candidate = normalize_auto_exposure_candidate_(policy.next_candidate);
+  const bool ordinary_candidate_progress =
+      !auto_exposure_candidates_equal_(ordinary_next_candidate, current_candidate) &&
+      auto_exposure_candidate_lower_(ordinary_next_candidate, current_candidate);
+
   if (policy.dark_channel_recovery_required) {
-    if (this->auto_exposure_convergence_attempts_ >= AUTO_EXPOSURE_CONVERGENCE_ATTEMPT_LIMIT ||
-        !this->recover_auto_exposure_from_dark_channel_()) {
+    if (this->auto_exposure_convergence_attempts_ >= AUTO_EXPOSURE_CONVERGENCE_ATTEMPT_LIMIT) {
       this->fail_auto_exposure_convergence_();
       return;
+    }
+
+    ESP_LOGD(TAG, "AS7261 dark-channel recovery attempted: current gain %u int %u, ordinary fallback gain %u int %u%s",
+             static_cast<unsigned>(gain_to_at_value_(current_candidate.gain)),
+             static_cast<unsigned>(current_candidate.integration_time),
+             static_cast<unsigned>(gain_to_at_value_(ordinary_next_candidate.gain)),
+             static_cast<unsigned>(ordinary_next_candidate.integration_time),
+             ordinary_candidate_progress ? "" : ", no ordinary progress");
+
+    if (this->recover_auto_exposure_from_dark_channel_()) {
+      const AutoExposureCandidate dark_recovery_candidate = normalize_auto_exposure_candidate_(policy.next_candidate);
+      const bool dark_recovery_progress =
+          !auto_exposure_candidates_equal_(dark_recovery_candidate, current_candidate) &&
+          auto_exposure_candidate_lower_(dark_recovery_candidate, current_candidate);
+      if (ordinary_candidate_progress &&
+          !auto_exposure_candidate_lower_(dark_recovery_candidate, ordinary_next_candidate)) {
+        policy.next_candidate = ordinary_next_candidate;
+        policy.dark_channel_recovery_required = false;
+        ESP_LOGD(TAG, "AS7261 dark-channel recovery candidate rejected; using ordinary lower candidate gain %u int %u",
+                 static_cast<unsigned>(gain_to_at_value_(policy.next_candidate.gain)),
+                 static_cast<unsigned>(policy.next_candidate.integration_time));
+      } else if (!dark_recovery_progress) {
+        if (!ordinary_candidate_progress) {
+          this->fail_auto_exposure_convergence_();
+          return;
+        }
+        policy.next_candidate = ordinary_next_candidate;
+        policy.dark_channel_recovery_required = false;
+        ESP_LOGD(TAG,
+                 "AS7261 dark-channel recovery did not produce a lower candidate; using ordinary lower candidate gain "
+                 "%u int %u",
+                 static_cast<unsigned>(gain_to_at_value_(policy.next_candidate.gain)),
+                 static_cast<unsigned>(policy.next_candidate.integration_time));
+      }
+    } else {
+      if (!ordinary_candidate_progress) {
+        this->fail_auto_exposure_convergence_();
+        return;
+      }
+      policy.next_candidate = ordinary_next_candidate;
+      policy.dark_channel_recovery_required = false;
+      ESP_LOGD(TAG, "AS7261 dark-channel recovery failed; using ordinary lower candidate gain %u int %u",
+               static_cast<unsigned>(gain_to_at_value_(policy.next_candidate.gain)),
+               static_cast<unsigned>(policy.next_candidate.integration_time));
     }
   }
 
@@ -1010,6 +1059,10 @@ void AS7261Component::handle_finished_auto_exposure_probe_() {
     this->fail_auto_exposure_convergence_();
     return;
   }
+
+  ESP_LOGD(TAG, "AS7261 auto exposure candidate chosen for application: gain %u int %u",
+           static_cast<unsigned>(gain_to_at_value_(policy.next_candidate.gain)),
+           static_cast<unsigned>(policy.next_candidate.integration_time));
 
   policy.current_candidate = normalize_auto_exposure_candidate_(policy.next_candidate);
   policy.candidate_applied = false;
