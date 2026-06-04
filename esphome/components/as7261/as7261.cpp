@@ -320,6 +320,9 @@ void AS7261Component::finish_command_sequence_(SequenceStatus status) {
     case SequenceOwner::FRAME_TRIGGER:
       this->handle_finished_frame_trigger_(status);
       break;
+    case SequenceOwner::FRAME_BURST_STOP:
+      this->handle_finished_frame_burst_stop_(status);
+      break;
     case SequenceOwner::RAW_FRAME_READOUT:
       this->handle_finished_raw_frame_readout_(status);
       break;
@@ -532,11 +535,12 @@ bool AS7261Component::start_one_shot_frame_trigger_() {
     return false;
   }
   const CommandSequenceStep steps[] = {
-      {"ATTCSMD=2", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATTCSMD=3", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+      {"ATBURST=1", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
   };
   this->frame_state_ = FrameState::TRIGGER_RUNNING;
   this->sequence_owner_ = SequenceOwner::FRAME_TRIGGER;
-  if (this->start_command_sequence_(steps, 1)) {
+  if (this->start_command_sequence_(steps, 2)) {
     return true;
   }
   this->sequence_owner_ = SequenceOwner::NONE;
@@ -553,8 +557,38 @@ void AS7261Component::handle_finished_frame_trigger_(SequenceStatus status) {
   }
   this->frame_readout_attempt_ = 0;
   this->schedule_frame_timed_readout_(this->calculate_frame_timed_readout_wait_ms_());
-  ESP_LOGD(TAG, "AS7261 one-shot trigger sent; waiting %u ms before timed UART readout",
+  ESP_LOGD(TAG, "AS7261 final Mode 3 burst started; waiting %u ms before timed UART stop/readout",
            static_cast<unsigned>(this->frame_timed_readout_wait_ms_));
+}
+
+bool AS7261Component::start_frame_burst_stop_() {
+  if (this->transport_busy_() || this->sequence_active_() || this->frame_state_ != FrameState::WAITING_TIMED_READOUT) {
+    return false;
+  }
+
+  const CommandSequenceStep steps[] = {
+      {"ATBURST=0", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
+  };
+  this->frame_state_ = FrameState::BURST_STOP_RUNNING;
+  this->sequence_owner_ = SequenceOwner::FRAME_BURST_STOP;
+  if (this->start_command_sequence_(steps, 1)) {
+    return true;
+  }
+
+  this->sequence_owner_ = SequenceOwner::NONE;
+  this->frame_state_ = FrameState::ERROR;
+  return false;
+}
+
+void AS7261Component::handle_finished_frame_burst_stop_(SequenceStatus status) {
+  if (status != SequenceStatus::COMPLETED) {
+    this->frame_state_ = FrameState::ERROR;
+    this->publish_nan_default_measurement_outputs_();
+    ESP_LOGW(TAG, "AS7261 final Mode 3 burst stop failed with %s", this->sequence_status_to_string_(status));
+    return;
+  }
+  this->frame_state_ = FrameState::READY;
+  ESP_LOGD(TAG, "AS7261 final Mode 3 burst stopped; starting timed UART readout");
 }
 
 void AS7261Component::poll_frame_trigger_() {
@@ -604,9 +638,12 @@ void AS7261Component::poll_frame_trigger_() {
     return;
   }
   if (millis() - this->frame_wait_started_millis_ >= this->frame_timed_readout_wait_ms_) {
-    this->frame_state_ = FrameState::READY;
     ESP_LOGD(TAG, "AS7261 timed UART readout window elapsed after %u ms",
              static_cast<unsigned>(this->frame_timed_readout_wait_ms_));
+    if (!this->start_frame_burst_stop_()) {
+      this->frame_state_ = FrameState::ERROR;
+      ESP_LOGW(TAG, "Unable to stop AS7261 final Mode 3 burst after timed wait");
+    }
   }
 }
 

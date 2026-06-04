@@ -131,6 +131,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     MANUAL_EXPOSURE,
     AUTO_EXPOSURE,
     FRAME_TRIGGER,
+    FRAME_BURST_STOP,
     RAW_FRAME_READOUT,
     CALIBRATED_FRAME_READOUT,
     SINGLE_BANK_PROBE_CONFIGURE,
@@ -142,6 +143,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     IDLE,
     TRIGGER_RUNNING,
     WAITING_TIMED_READOUT,
+    BURST_STOP_RUNNING,
     READY,
     READOUT_RUNNING,
     TIMEOUT,
@@ -403,6 +405,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   bool start_manual_exposure_commands_();
   bool start_auto_exposure_candidate_commands_();
   bool start_one_shot_frame_trigger_();
+  bool start_frame_burst_stop_();
   bool start_single_bank_probe_();
   bool start_raw_frame_readout_();
   bool start_calibrated_frame_readout_();
@@ -411,6 +414,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void poll_single_bank_probe_();
   void handle_finished_diagnostic_readout_(SequenceStatus status);
   void handle_finished_frame_trigger_(SequenceStatus status);
+  void handle_finished_frame_burst_stop_(SequenceStatus status);
   void clear_terminal_frame_state_();
   void handle_finished_raw_frame_readout_(SequenceStatus status);
   void handle_finished_single_bank_probe_configure_(SequenceStatus status);
