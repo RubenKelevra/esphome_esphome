@@ -264,11 +264,6 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
     FAILED,
   };
 
-  struct Cie1931XyPoint {
-    float x;
-    float y;
-  };
-
   struct Cie1960UcsPoint {
     float u;
     float v;
@@ -503,9 +498,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static bool consume_raw_frame_separator_(const char **cursor);
   static bool parse_unsigned_u16_(const char *begin, const char *end, uint16_t *value);
   static bool parse_unsigned_digits_(const char *begin, const char *end, uint8_t base, uint16_t *value);
-  bool derive_calibrated_xyz_from_xyy_();
   static bool parse_calibrated_xyz_(const char *text, CalibratedFrame *frame);
-  static bool parse_calibrated_xy_(const char *text, Cie1931XyPoint *point);
   static bool parse_calibrated_xyz_field_(const char **cursor, float *value, bool expect_separator);
   static bool consume_calibrated_frame_separator_(const char **cursor);
   static bool parse_calibrated_value_(const char *text, float *value);
@@ -575,9 +568,6 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   SingleBankProbeStatus single_bank_probe_status_{SingleBankProbeStatus::INVALID};
   CalibratedFrame calibrated_frame_{};
   CalibratedFrameStatus calibrated_frame_status_{CalibratedFrameStatus::INVALID};
-  Cie1931XyPoint calibrated_chromaticity_{};
-  bool calibrated_chromaticity_valid_{false};
-  bool calibrated_xyz_direct_valid_{false};
   CalculatedDuvFrame calculated_duv_frame_{};
   CalculatedDuvStatus calculated_duv_status_{CalculatedDuvStatus::INVALID};
   DerivedColorFrame derived_color_frame_{};
