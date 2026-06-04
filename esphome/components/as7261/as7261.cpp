@@ -739,15 +739,16 @@ void AS7261Component::handle_finished_single_bank_probe_raw_readout_(SequenceSta
     }
     return;
   }
-  if (raw_frame_empty_(frame)) {
+  const bool frame_empty = raw_frame_empty_(frame);
+  const bool auto_exposure_probe_active =
+      this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING;
+  if (frame_empty && !auto_exposure_probe_active) {
     this->clear_single_bank_probe_result_(SingleBankProbeStatus::MALFORMED);
     ESP_LOGW(TAG, "Rejecting empty all-zero AS7261 single-bank probe raw frame");
-    if (this->auto_exposure_convergence_state_ == AutoExposureConvergenceState::PROBING) {
-      this->fail_auto_exposure_convergence_();
-    }
     return;
+  } else if (frame_empty) {
+    ESP_LOGD(TAG, "Treating empty all-zero AS7261 single-bank probe raw frame as too-dark auto-exposure evidence");
   }
-
   this->single_bank_probe_raw_frame_ = frame;
   this->single_bank_probe_status_ = SingleBankProbeStatus::VALID;
   this->single_bank_probe_state_ = SingleBankProbeState::IDLE;
@@ -1117,7 +1118,8 @@ bool AS7261Component::update_auto_exposure_policy_() {
 
   const ExposureAssessment &assessment = this->exposure_assessment_;
   if (assessment.guidance == ExposureAssessmentGuidance::INVALID || !std::isfinite(assessment.clear_percent) ||
-      assessment.clear_percent <= 0.0f) {
+      assessment.clear_percent < 0.0f ||
+      (assessment.clear_percent == 0.0f && assessment.guidance != ExposureAssessmentGuidance::JUMP_INCREASE)) {
     policy.action = AutoExposurePolicyAction::INVALID_ASSESSMENT;
     return false;
   }
@@ -1126,13 +1128,15 @@ bool AS7261Component::update_auto_exposure_policy_() {
     policy.action = AutoExposurePolicyAction::ACCEPT_CURRENT;
     policy.accepted = true;
   } else {
-    float multiplier = AUTO_EXPOSURE_TARGET_CLEAR_PERCENT / assessment.clear_percent;
+    float multiplier = 1.0f;
     switch (assessment.guidance) {
       case ExposureAssessmentGuidance::DECREASE:
         policy.action = AutoExposurePolicyAction::DECREASE;
+        multiplier = AUTO_EXPOSURE_TARGET_CLEAR_PERCENT / assessment.clear_percent;
         break;
       case ExposureAssessmentGuidance::INCREASE:
         policy.action = AutoExposurePolicyAction::INCREASE;
+        multiplier = AUTO_EXPOSURE_TARGET_CLEAR_PERCENT / assessment.clear_percent;
         break;
       case ExposureAssessmentGuidance::JUMP_INCREASE:
         policy.action = AutoExposurePolicyAction::JUMP_INCREASE;
@@ -1141,6 +1145,7 @@ bool AS7261Component::update_auto_exposure_policy_() {
       case ExposureAssessmentGuidance::RECOVER_OVEREXPOSED:
         policy.action = AutoExposurePolicyAction::RECOVER_OVEREXPOSED;
         policy.dark_channel_recovery_required = true;
+        multiplier = AUTO_EXPOSURE_TARGET_CLEAR_PERCENT / assessment.clear_percent;
         break;
       default:
         policy.action = AutoExposurePolicyAction::INVALID_ASSESSMENT;
