@@ -1464,12 +1464,15 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
   if (step_index == 0) {
     CalibratedFrame xyz{};
     if (!parse_calibrated_xyz_(value, &xyz)) {
-      ESP_LOGW(TAG, "Unable to parse AS7261 calibrated XYZ response: %s", value == nullptr ? "<empty>" : value);
+      ESP_LOGW(TAG,
+               "Unable to parse AS7261 calibrated XYZ response: %s; continuing to raw final-frame readout for "
+               "diagnostics",
+               value == nullptr ? "<empty>" : value);
       this->calibrated_frame_ = CalibratedFrame{};
       this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
       this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
       this->clear_derived_color_(DerivedColorStatus::MALFORMED);
-      return false;
+      return true;
     }
     this->calibrated_frame_.x = xyz.x;
     this->calibrated_frame_.y = xyz.y;
@@ -1484,13 +1487,15 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
       ESP_LOGW(TAG, "Unable to parse AS7261 vendor CIE 1976 DUV response: %s", value == nullptr ? "<empty>" : value);
       return true;
     }
-    ESP_LOGW(TAG, "Unable to parse AS7261 calibrated %s response: %s", step_index == 1 ? "lux" : "CCT",
-             value == nullptr ? "<empty>" : value);
+    ESP_LOGW(TAG,
+             "Unable to parse AS7261 calibrated %s response: %s; continuing to raw final-frame readout for "
+             "diagnostics",
+             step_index == 1 ? "lux" : "CCT", value == nullptr ? "<empty>" : value);
     this->calibrated_frame_ = CalibratedFrame{};
     this->calibrated_frame_status_ = CalibratedFrameStatus::MALFORMED;
     this->clear_calculated_duv_(CalculatedDuvStatus::MALFORMED);
     this->clear_derived_color_(DerivedColorStatus::MALFORMED);
-    return false;
+    return true;
   }
   if (step_index == 1) {
     this->calibrated_frame_.lux = parsed;
@@ -1541,12 +1546,13 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
     return;
   }
 
-  if (!std::isfinite(this->calibrated_frame_.x) || !std::isfinite(this->calibrated_frame_.y) ||
-      !std::isfinite(this->calibrated_frame_.z) || !std::isfinite(this->calibrated_frame_.lux) ||
-      !std::isfinite(this->calibrated_frame_.cct)) {
-    this->fail_timed_frame_readout_("malformed calibrated frame", RawFrameStatus::VALID,
-                                    CalibratedFrameStatus::MALFORMED, CalculatedDuvStatus::MALFORMED,
-                                    DerivedColorStatus::MALFORMED);
+  if (this->calibrated_frame_status_ == CalibratedFrameStatus::MALFORMED || !std::isfinite(this->calibrated_frame_.x) ||
+      !std::isfinite(this->calibrated_frame_.y) || !std::isfinite(this->calibrated_frame_.z) ||
+      !std::isfinite(this->calibrated_frame_.lux) || !std::isfinite(this->calibrated_frame_.cct)) {
+    const RawFrameStatus raw_status =
+        this->raw_frame_status_ == RawFrameStatus::VALID ? RawFrameStatus::VALID : RawFrameStatus::FAILED;
+    this->fail_timed_frame_readout_("malformed calibrated frame", raw_status, CalibratedFrameStatus::MALFORMED,
+                                    CalculatedDuvStatus::MALFORMED, DerivedColorStatus::MALFORMED);
     ESP_LOGW(TAG, "Rejecting malformed AS7261 calibrated frame");
     return;
   }
