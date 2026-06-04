@@ -48,6 +48,10 @@ sensor:
       name: AS7261 Temperature
     duv_cie1976:
       name: AS7261 Vendor DUV CIE1976
+    x_cie1931:
+      name: AS7261 Vendor x CIE 1931
+    y_cie1931:
+      name: AS7261 Vendor y CIE 1931
     near_ir_percent:
       name: AS7261 Near IR Percent
     raw_clear:

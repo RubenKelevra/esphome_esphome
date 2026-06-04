@@ -60,6 +60,8 @@ void AS7261Component::dump_config() {
   LOG_SENSOR("  ", "Completed measurement count", this->completed_measurement_count_sensor_);
   LOG_SENSOR("  ", "Device temperature", this->device_temperature_sensor_);
   LOG_SENSOR("  ", "Vendor CIE 1976 DUV", this->duv_cie1976_sensor_);
+  LOG_SENSOR("  ", "Vendor CIE 1931 x", this->x_cie1931_sensor_);
+  LOG_SENSOR("  ", "Vendor CIE 1931 y", this->y_cie1931_sensor_);
   LOG_SENSOR("  ", "Near-IR percent", this->near_ir_percent_sensor_);
   LOG_SENSOR("  ", "Raw clear", this->raw_clear_sensor_);
   LOG_SENSOR("  ", "Raw dark", this->raw_dark_sensor_);
@@ -466,11 +468,12 @@ bool AS7261Component::start_diagnostic_readout_() {
 #ifdef USE_TEXT_SENSOR
   if (this->firmware_version_text_sensor_ != nullptr) {
     const CommandSequenceStep steps[] = {
+        {"ATLED0=0", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
         {"ATVERSW", DiagnosticState::FIRMWARE_VERSION, SequenceFailurePolicy::CONTINUE},
         {"ATTEMP", DiagnosticState::DEVICE_TEMPERATURE, SequenceFailurePolicy::STOP},
     };
     this->sequence_owner_ = SequenceOwner::DIAGNOSTIC_READOUT;
-    if (this->start_command_sequence_(steps, 2)) {
+    if (this->start_command_sequence_(steps, 3)) {
       return true;
     }
     this->sequence_owner_ = SequenceOwner::NONE;
@@ -478,10 +481,11 @@ bool AS7261Component::start_diagnostic_readout_() {
   }
 #endif
   const CommandSequenceStep steps[] = {
+      {"ATLED0=0", DiagnosticState::IDLE, SequenceFailurePolicy::STOP},
       {"ATTEMP", DiagnosticState::DEVICE_TEMPERATURE, SequenceFailurePolicy::STOP},
   };
   this->sequence_owner_ = SequenceOwner::DIAGNOSTIC_READOUT;
-  if (this->start_command_sequence_(steps, 1)) {
+  if (this->start_command_sequence_(steps, 2)) {
     return true;
   }
   this->sequence_owner_ = SequenceOwner::NONE;
@@ -1410,6 +1414,10 @@ bool AS7261Component::start_calibrated_frame_readout_() {
     steps[step_count] = CommandSequenceStep{"ATDUVC", DiagnosticState::IDLE, SequenceFailurePolicy::CONTINUE};
     step_count++;
   }
+  if (this->x_cie1931_sensor_ != nullptr || this->y_cie1931_sensor_ != nullptr) {
+    steps[step_count] = CommandSequenceStep{"ATSMALLXYC", DiagnosticState::IDLE, SequenceFailurePolicy::CONTINUE};
+    step_count++;
+  }
 #endif
   steps[step_count] = CommandSequenceStep{"ATDATA", DiagnosticState::IDLE, SequenceFailurePolicy::STOP};
   step_count++;
@@ -1422,6 +1430,7 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   this->clear_calculated_duv_(CalculatedDuvStatus::INVALID);
   this->clear_derived_color_(DerivedColorStatus::INVALID);
   this->clear_vendor_duv_cie1976_();
+  this->clear_vendor_cie1931_chromaticity_();
   this->frame_state_ = FrameState::READOUT_RUNNING;
   this->sequence_owner_ = SequenceOwner::CALIBRATED_FRAME_READOUT;
   if (this->start_command_sequence_(steps, step_count)) {
@@ -1437,6 +1446,7 @@ bool AS7261Component::start_calibrated_frame_readout_() {
   this->clear_calculated_duv_(CalculatedDuvStatus::FAILED);
   this->clear_derived_color_(DerivedColorStatus::FAILED);
   this->clear_vendor_duv_cie1976_();
+  this->clear_vendor_cie1931_chromaticity_();
   this->clear_terminal_frame_state_();
   return false;
 }
@@ -1444,11 +1454,15 @@ bool AS7261Component::start_calibrated_frame_readout_() {
 bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_index, TransportResult result) {
   const char *const command = this->command_sequence_[step_index].command;
   const bool vendor_duv_step = command != nullptr && std::strcmp(command, "ATDUVC") == 0;
+  const bool vendor_cie1931_step = command != nullptr && std::strcmp(command, "ATSMALLXYC") == 0;
   const bool raw_frame_step = command != nullptr && std::strcmp(command, "ATDATA") == 0;
   const bool burst_stop_step = command != nullptr && std::strcmp(command, "ATBURST=0") == 0;
   if (result != TransportResult::OK) {
     if (vendor_duv_step) {
       this->clear_vendor_duv_cie1976_();
+    }
+    if (vendor_cie1931_step) {
+      this->clear_vendor_cie1931_chromaticity_();
     }
     return true;
   }
@@ -1478,6 +1492,20 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
       ESP_LOGW(TAG, "Unable to assess AS7261 clear-channel exposure");
     }
     this->update_auto_exposure_policy_();
+    return true;
+  }
+
+  if (vendor_cie1931_step) {
+    float parsed_x = NAN;
+    float parsed_y = NAN;
+    if (!parse_calibrated_xy_(value, &parsed_x, &parsed_y)) {
+      this->clear_vendor_cie1931_chromaticity_();
+      ESP_LOGW(TAG, "Unable to parse AS7261 vendor CIE 1931 xy response: %s", value == nullptr ? "<empty>" : value);
+      return true;
+    }
+    this->vendor_cie1931_x_ = parsed_x;
+    this->vendor_cie1931_y_ = parsed_y;
+    this->vendor_cie1931_valid_ = true;
     return true;
   }
 
@@ -1540,6 +1568,21 @@ bool AS7261Component::handle_finished_calibrated_frame_command_(size_t step_inde
     this->calibrated_frame_.cct = parsed;
     return true;
   }
+
+  if (vendor_cie1931_step) {
+    float x = NAN;
+    float y = NAN;
+    if (!parse_calibrated_xy_(value, &x, &y)) {
+      this->clear_vendor_cie1931_chromaticity_();
+      ESP_LOGW(TAG, "Unable to parse AS7261 vendor CIE 1931 xy response: %s", value == nullptr ? "<empty>" : value);
+      return true;
+    }
+    this->vendor_cie1931_x_ = x;
+    this->vendor_cie1931_y_ = y;
+    this->vendor_cie1931_valid_ = true;
+    return true;
+  }
+
   if (vendor_duv_step) {
     this->vendor_duv_cie1976_ = parsed;
     this->vendor_duv_cie1976_valid_ = true;
@@ -1800,8 +1843,13 @@ void AS7261Component::publish_default_measurement_outputs_() {
 void AS7261Component::publish_optional_measurement_diagnostics_() {
 #ifdef USE_SENSOR
   if (this->duv_cie1976_sensor_ != nullptr) {
-    this->duv_cie1976_sensor_->publish_state(
-        this->vendor_duv_cie1976_valid_ && std::isfinite(this->vendor_duv_cie1976_) ? this->vendor_duv_cie1976_ : NAN);
+    this->duv_cie1976_sensor_->publish_state(this->vendor_duv_cie1976_valid_ ? this->vendor_duv_cie1976_ : NAN);
+  }
+  if (this->x_cie1931_sensor_ != nullptr) {
+    this->x_cie1931_sensor_->publish_state(this->vendor_cie1931_valid_ ? this->vendor_cie1931_x_ : NAN);
+  }
+  if (this->y_cie1931_sensor_ != nullptr) {
+    this->y_cie1931_sensor_->publish_state(this->vendor_cie1931_valid_ ? this->vendor_cie1931_y_ : NAN);
   }
   if (this->near_ir_percent_sensor_ != nullptr) {
     float near_ir_percent = NAN;
@@ -1869,9 +1917,16 @@ void AS7261Component::publish_optional_measurement_diagnostics_() {
 
 void AS7261Component::publish_nan_optional_measurement_diagnostics_() {
   this->clear_vendor_duv_cie1976_();
+  this->clear_vendor_cie1931_chromaticity_();
 #ifdef USE_SENSOR
   if (this->duv_cie1976_sensor_ != nullptr) {
     this->duv_cie1976_sensor_->publish_state(NAN);
+  }
+  if (this->x_cie1931_sensor_ != nullptr) {
+    this->x_cie1931_sensor_->publish_state(NAN);
+  }
+  if (this->y_cie1931_sensor_ != nullptr) {
+    this->y_cie1931_sensor_->publish_state(NAN);
   }
   if (this->near_ir_percent_sensor_ != nullptr) {
     this->near_ir_percent_sensor_->publish_state(NAN);
@@ -1912,6 +1967,12 @@ void AS7261Component::publish_nan_optional_measurement_diagnostics_() {
 void AS7261Component::clear_vendor_duv_cie1976_() {
   this->vendor_duv_cie1976_ = NAN;
   this->vendor_duv_cie1976_valid_ = false;
+}
+
+void AS7261Component::clear_vendor_cie1931_chromaticity_() {
+  this->vendor_cie1931_x_ = NAN;
+  this->vendor_cie1931_y_ = NAN;
+  this->vendor_cie1931_valid_ = false;
 }
 
 void AS7261Component::publish_nan_default_measurement_outputs_() {
@@ -2709,6 +2770,28 @@ bool AS7261Component::parse_calibrated_xyz_(const char *text, CalibratedFrame *f
   frame->x = parsed.x;
   frame->y = parsed.y;
   frame->z = parsed.z;
+  return true;
+}
+
+bool AS7261Component::parse_calibrated_xy_(const char *text, float *x, float *y) {
+  if (text == nullptr || x == nullptr || y == nullptr) {
+    return false;
+  }
+
+  const char *cursor = text;
+  float parsed_x = NAN;
+  float parsed_y = NAN;
+  if (!parse_calibrated_xyz_field_(&cursor, &parsed_x, true) ||
+      !parse_calibrated_xyz_field_(&cursor, &parsed_y, false)) {
+    return false;
+  }
+
+  cursor = trim_left_(cursor);
+  if (*cursor != '\0' && *cursor != '\n') {
+    return false;
+  }
+  *x = parsed_x;
+  *y = parsed_y;
   return true;
 }
 

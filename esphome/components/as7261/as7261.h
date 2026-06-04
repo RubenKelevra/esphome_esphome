@@ -39,6 +39,8 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   SUB_SENSOR(completed_measurement_count)
   SUB_SENSOR(device_temperature)
   SUB_SENSOR(duv_cie1976)
+  SUB_SENSOR(x_cie1931)
+  SUB_SENSOR(y_cie1931)
   SUB_SENSOR(near_ir_percent)
   SUB_SENSOR(raw_clear)
   SUB_SENSOR(raw_dark)
@@ -449,6 +451,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void publish_nan_optional_measurement_diagnostics_();
   void publish_manual_measurement_completion_();
   void clear_vendor_duv_cie1976_();
+  void clear_vendor_cie1931_chromaticity_();
   bool precision_collection_active_() const {
     return this->precision_collection_status_ == PrecisionCollectionStatus::COLLECTING;
   }
@@ -501,6 +504,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static bool parse_unsigned_u16_(const char *begin, const char *end, uint16_t *value);
   static bool parse_unsigned_digits_(const char *begin, const char *end, uint8_t base, uint16_t *value);
   static bool parse_calibrated_xyz_(const char *text, CalibratedFrame *frame);
+  static bool parse_calibrated_xy_(const char *text, float *x, float *y);
   static bool parse_calibrated_xyz_field_(const char **cursor, float *value, bool expect_separator);
   static bool consume_calibrated_frame_separator_(const char **cursor);
   static bool parse_calibrated_value_(const char *text, float *value);
@@ -576,6 +580,9 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   DerivedColorStatus derived_color_status_{DerivedColorStatus::INVALID};
   float vendor_duv_cie1976_{0.0f};
   bool vendor_duv_cie1976_valid_{false};
+  float vendor_cie1931_x_{NAN};
+  float vendor_cie1931_y_{NAN};
+  bool vendor_cie1931_valid_{false};
   CalibratedFrame precision_frames_[PRECISION_FRAME_COUNT]{};
   size_t precision_frame_count_{0};
   PrecisionCollectionStatus precision_collection_status_{PrecisionCollectionStatus::IDLE};

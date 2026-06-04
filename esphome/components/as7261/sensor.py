@@ -25,6 +25,8 @@ CONF_CCT = "cct"
 CONF_COMPLETED_MEASUREMENT_COUNT = "completed_measurement_count"
 CONF_DEVICE_TEMPERATURE = "device_temperature"
 CONF_DUV_CIE1976 = "duv_cie1976"
+CONF_X_CIE1931 = "x_cie1931"
+CONF_Y_CIE1931 = "y_cie1931"
 CONF_LUX = "lux"
 CONF_NEAR_IR_PERCENT = "near_ir_percent"
 CONF_OKLAB_L = "oklab_l"
@@ -113,6 +115,8 @@ CONFIG_SCHEMA = cv.Schema(
             )
         ),
         cv.Optional(CONF_DUV_CIE1976): diagnostic_unitless_schema,
+        cv.Optional(CONF_X_CIE1931): diagnostic_unitless_schema,
+        cv.Optional(CONF_Y_CIE1931): diagnostic_unitless_schema,
         cv.Optional(CONF_NEAR_IR_PERCENT): diagnostic_schema(
             sensor.sensor_schema(
                 unit_of_measurement=UNIT_PERCENT,
@@ -147,6 +151,8 @@ SENSORS = {
     CONF_COMPLETED_MEASUREMENT_COUNT: "set_completed_measurement_count_sensor",
     CONF_DEVICE_TEMPERATURE: "set_device_temperature_sensor",
     CONF_DUV_CIE1976: "set_duv_cie1976_sensor",
+    CONF_X_CIE1931: "set_x_cie1931_sensor",
+    CONF_Y_CIE1931: "set_y_cie1931_sensor",
     CONF_NEAR_IR_PERCENT: "set_near_ir_percent_sensor",
     CONF_RAW_CLEAR: "set_raw_clear_sensor",
     CONF_RAW_DARK: "set_raw_dark_sensor",
