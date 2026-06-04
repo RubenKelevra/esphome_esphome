@@ -359,9 +359,10 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   static constexpr float RAW_CLEAR_FULL_SCALE = 65535.0f;
   static constexpr float CLEAR_PERCENT_SCALE = 100.0f;
   static constexpr float CLEAR_OVEREXPOSED_PERCENT = 98.0f;
-  static constexpr float CLEAR_NEAR_SATURATION_PERCENT = 40.0f;
+  static constexpr float CLEAR_NEAR_SATURATION_PERCENT = 88.0f;
   static constexpr float CLEAR_TARGET_LOW_PERCENT = 20.0f;
   static constexpr float CLEAR_TRUSTED_LOW_PERCENT = 5.0f;
+  static constexpr float CLEAR_MAX_EXPOSURE_LOW_LIGHT_FLOOR_PERCENT = 1.0f;
   static constexpr uint8_t AUTO_EXPOSURE_MIN_INTEGRATION_TIME = 1;
   static constexpr AS7261Gain AUTO_EXPOSURE_FALLBACK_GAIN = AS7261_GAIN_16X;
   static constexpr float AUTO_EXPOSURE_TARGET_CLEAR_PERCENT =
@@ -434,6 +435,7 @@ class AS7261Component : public PollingComponent, public uart::UARTDevice {
   void fail_auto_exposure_convergence_();
   void initialize_auto_exposure_policy_();
   bool update_auto_exposure_policy_();
+  bool max_exposure_low_light_final_frame_valid_() const;
   bool recover_auto_exposure_from_dark_channel_();
   bool auto_exposure_candidate_applied_() const;
   static bool auto_exposure_candidate_lower_(AutoExposureCandidate candidate, AutoExposureCandidate baseline);

@@ -1159,8 +1159,14 @@ bool AS7261Component::update_auto_exposure_policy_() {
   const bool trusted_but_too_dark_at_max = at_max_auto_exposure &&
                                            assessment.guidance == ExposureAssessmentGuidance::INCREASE &&
                                            assessment.clear_percent >= CLEAR_TRUSTED_LOW_PERCENT;
+  const bool minimal_signal_at_max =
+      at_max_auto_exposure && assessment.guidance == ExposureAssessmentGuidance::JUMP_INCREASE &&
+      assessment.clear_percent >= CLEAR_MAX_EXPOSURE_LOW_LIGHT_FLOOR_PERCENT &&
+      this->single_bank_probe_status_ == SingleBankProbeStatus::VALID && this->single_bank_probe_raw_frame_.x != 0 &&
+      this->single_bank_probe_raw_frame_.y != 0;
 
-  if (assessment.guidance == ExposureAssessmentGuidance::ACCEPT || trusted_but_too_dark_at_max) {
+  if (assessment.guidance == ExposureAssessmentGuidance::ACCEPT || trusted_but_too_dark_at_max ||
+      minimal_signal_at_max) {
     policy.action = AutoExposurePolicyAction::ACCEPT_CURRENT;
     policy.accepted = true;
   } else {
@@ -1202,6 +1208,26 @@ bool AS7261Component::update_auto_exposure_policy_() {
            static_cast<unsigned>(policy.next_candidate.integration_time),
            policy.dark_channel_recovery_required ? ", dark recovery required" : "", policy.clamped ? ", clamped" : "");
   return true;
+}
+
+bool AS7261Component::max_exposure_low_light_final_frame_valid_() const {
+  const AutoExposurePolicy &policy = this->auto_exposure_policy_;
+  const bool at_max_auto_exposure =
+      policy.current_candidate.gain == AS7261_GAIN_64X &&
+      policy.current_candidate.integration_time >= AUTO_EXPOSURE_FALLBACK_INTEGRATION_TIME;
+  if (!at_max_auto_exposure || this->raw_frame_status_ != RawFrameStatus::VALID) {
+    return true;
+  }
+  if (!std::isfinite(this->exposure_assessment_.clear_percent)) {
+    return true;
+  }
+  if (this->exposure_assessment_.clear_percent >= CLEAR_TRUSTED_LOW_PERCENT) {
+    return true;
+  }
+  if (this->exposure_assessment_.clear_percent < CLEAR_MAX_EXPOSURE_LOW_LIGHT_FLOOR_PERCENT) {
+    return false;
+  }
+  return this->raw_frame_.x != 0 && this->raw_frame_.y != 0 && this->raw_frame_.z != 0;
 }
 
 bool AS7261Component::recover_auto_exposure_from_dark_channel_() {
@@ -1554,6 +1580,14 @@ void AS7261Component::handle_finished_calibrated_frame_readout_(SequenceStatus s
     this->fail_timed_frame_readout_("malformed calibrated frame", raw_status, CalibratedFrameStatus::MALFORMED,
                                     CalculatedDuvStatus::MALFORMED, DerivedColorStatus::MALFORMED);
     ESP_LOGW(TAG, "Rejecting malformed AS7261 calibrated frame");
+    return;
+  }
+
+  if (!this->max_exposure_low_light_final_frame_valid_()) {
+    this->fail_timed_frame_readout_("invalid low-light max-exposure final frame", RawFrameStatus::MALFORMED,
+                                    CalibratedFrameStatus::MALFORMED, CalculatedDuvStatus::MALFORMED,
+                                    DerivedColorStatus::MALFORMED);
+    ESP_LOGW(TAG, "Rejecting AS7261 max-exposure low-light frame without nonzero XYZ raw signal");
     return;
   }
 
